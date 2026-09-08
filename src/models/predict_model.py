@@ -38,27 +38,36 @@ def score(feats: pl.DataFrame, artifact: dict | None = None) -> pl.DataFrame:
     model_version``.
     """
     artifact = artifact or load_artifact()
+
     cols = artifact["feature_cols"]
     target = artifact["target"]
 
     data = feats.drop_nulls(subset=cols).sort("date_heure")
     X = data.select(cols).to_numpy()
     y_pred = artifact["model"].predict(X)
-    y_true = data.get_column(target).to_numpy().astype(float)
 
-    residual = y_true - y_pred
-    scale = artifact["resid_scale"] or 1e-9
-    ascore = np.abs(residual - artifact["resid_median"]) / scale
-    is_anom = ascore > artifact["k"]
+    has_target = target in data.columns and data.get_column(target).null_count() < len(data)
 
-    return data.select("date_heure").with_columns(
-        pl.Series("y_true", y_true),
-        pl.Series("y_pred", y_pred),
-        pl.Series("residual", residual),
-        pl.Series("anomaly_score", ascore),
-        pl.Series("is_anomaly", is_anom),
-        pl.lit(artifact["version"]).alias("model_version"),
-    )
+    if has_target:
+        y_true = data.get_column(target).to_numpy().astype(float)
+        residual = y_true - y_pred
+        scale = artifact["resid_scale"] or 1e-9
+        ascore = np.abs(residual - artifact["resid_median"]) / scale
+        is_anom = ascore > artifact["k"]
+
+        return data.select("date_heure").with_columns(
+            pl.Series("y_true", y_true),
+            pl.Series("y_pred", y_pred),
+            pl.Series("residual", residual),
+            pl.Series("anomaly_score", ascore),
+            pl.Series("is_anomaly", is_anom),
+            pl.lit(artifact["version"]).alias("model_version"),
+        )
+    else:
+        return data.select("date_heure").with_columns(
+            pl.Series("y_pred", y_pred),
+            pl.lit(artifact["version"]).alias("model_version"),
+        )   
 
 
 def score_from_csv(artifact: dict | None = None) -> pl.DataFrame:
