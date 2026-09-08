@@ -1,1 +1,17 @@
-
+# Dépendances du projet (compatibles avec la CI GitHub Actions du mentor).
+# En local, préférer `uv sync` (voir pyproject.toml). Ce fichier reste la source
+# pour `pip install -r requirements.txt` utilisé par python-app.yml.
+polars>=1.44
+pyarrow>=17
+duckdb>=1.5
+psycopg[binary]>=3.2
+httpx>=0.27
+pydantic>=2.7
+pydantic-settings>=2.3
+holidays>=0.100
+vacances-scolaires-france>=0.3
+scikit-learn>=1.5
+joblib>=1.4
+matplotlib>=3.8
+# Modèle avancé optionnel (désaisonnalisation MSTL) :
+statsforecast>=1.7
