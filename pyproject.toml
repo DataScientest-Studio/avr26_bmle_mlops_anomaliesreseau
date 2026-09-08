@@ -17,6 +17,8 @@ dependencies = [
     "joblib>=1.4",
     "matplotlib>=3.8",
     "statsforecast>=1.7",
+    "uvicorn>=0.52",
+    "fastapi>=0.141",
 ]
 
 [project.optional-dependencies]

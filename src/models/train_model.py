@@ -91,6 +91,7 @@ def train(
     feats = feats if feats is not None else load_feature_frame()
 
     feature_cols = select_feature_columns(feats)
+
     # On ne garde que les lignes complètes (features + cible), le début de série
     # ayant des lags nuls.
     needed = feature_cols + [TARGET]
