@@ -12,10 +12,15 @@ class Settings(BaseSettings):
 
     @property
     def dsn(self) -> str:
+        """Chaîne libpq, pour psycopg.connect()."""
         return (
             f"postgresql://{self.postgres_user}:{self.postgres_password}"
             f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
         )
 
+    @property
+    def sqlalchemy_url(self) -> str:
+        """URL SQLAlchemy, pilote psycopg 3 explicite."""
+        return self.dsn.replace("postgresql://", "postgresql+psycopg://", 1)
 
 settings = Settings()
