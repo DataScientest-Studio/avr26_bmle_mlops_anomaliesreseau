@@ -5,13 +5,15 @@ from pathlib import Path
 import psycopg
 
 from src.config.settings import settings
+from src.data.chemins import RAW, creer_dossiers
 
-RACINE = Path(__file__).resolve().parents[2]
-DEFAUT = RACINE / "data/raw/eco2mix-national-cons-def.csv"
+DEFAUT = RAW / "eco2mix-national-cons-def.csv"
 TABLE = "staging.eco2mix_national_cons_def"
 
 
 def charger(csv: Path, table: str = TABLE) -> int:
+    """Vide la table de staging puis y charge le CSV. Renvoie le nombre de lignes."""
+    creer_dossiers()
     if not csv.exists():
         raise FileNotFoundError(csv)
 
