@@ -1,9 +1,3 @@
--- Convertit un champ texte du staging en entier.
--- 'ND' (non disponible) et la chaîne vide deviennent NULL.
-CREATE OR REPLACE FUNCTION staging.vers_int(v text) RETURNS integer
-    LANGUAGE sql IMMUTABLE PARALLEL SAFE AS
-$$ SELECT nullif(nullif(btrim(v), 'ND'), '')::integer $$;
-
 INSERT INTO raw.eco2mix_national (
     date_heure, nature, perimetre,
     consommation, prevision_j1, prevision_j,
