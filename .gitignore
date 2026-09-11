@@ -94,3 +94,5 @@ target/
 
 # Ruff
 .ruff_cache/
+# project specifics
+/logs/

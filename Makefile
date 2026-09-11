@@ -23,3 +23,6 @@ lint:
 
 test:
 	uv run pytest -q
+
+init:
+	uv run alembic upgrade head && uv run python -m src.data.load && uv run python -m src.data.build_raw
