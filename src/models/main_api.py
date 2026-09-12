@@ -1,15 +1,102 @@
-from fastapi import FastAPI, HTTPException, BackgroundTasks
-# from fastapi.security import HTTPBasic, HTTPBasicCredentials
+from datetime import datetime, timedelta, timezone
+from fastapi import FastAPI, HTTPException, status, Depends, BackgroundTasks
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from typing import List, Optional
 from pydantic import BaseModel
 import polars as pl
 from src.models.predict_model import score
 from src.models.train_model import train
+import jwt
+from jwt.exceptions import InvalidTokenError
 
+from sqlalchemy import create_engine, select
+from sqlalchemy.orm import Session
+
+from src.config.settings import settings
+from src.data.create_users import User as DBUser
+import hashlib
+import hmac
+
+# ==============================
+# Gestion authentification
+# ==============================
+
+SECRET_KEY = "lvcnrM3FcRg5g+RspAYOd8GNA4C4hkrMKuAmNncJ6Vg="
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 60
+
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/token")
+
+def get_users_dict() -> dict[str, dict[str, str]]:
+    engine = create_engine(settings.sqlalchemy_url)
+    with Session(engine) as session:
+        users = session.execute(select(DBUser)).scalars().all()
+        return {
+            u.username: {
+                "username": u.username,
+                "password": u.password,
+                "role": u.role,
+            }
+            for u in users
+        }
+
+USERS_DB = get_users_dict()
+
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    computed = hmac.new(
+        SECRET_KEY.encode("utf-8"),
+        plain_password.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    return hmac.compare_digest(computed, hashed_password)
+
+class Token(BaseModel):
+    access_token: str
+    token_type: str
+
+class User(BaseModel):
+    username: str
+    role: str
+
+# --- Fonctions et depends Auth ---
+def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
+    to_encode = data.copy()
+    expire = datetime.now(timezone.utc) + (expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
+    to_encode.update({"exp": expire})
+    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+
+def get_current_user(token: str = Depends(oauth2_scheme)) -> User:
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Jeton d'authentification invalide ou expiré",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        username: str = payload.get("sub")
+        role: str = payload.get("role")
+        if username is None or role is None:
+            raise credentials_exception
+    except InvalidTokenError:
+        raise credentials_exception
+
+    user = USERS_DB.get(username)
+    if user is None:
+        raise credentials_exception
+    return User(username=user["username"], role=user["role"])
+
+def require_admin(current_user: User = Depends(get_current_user)) -> User:
+    """Vérifie que l'utilisateur connecté possède les privilèges administrateur."""
+    if current_user.role != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Droits administrateur requis pour cette opération"
+        )
+    return current_user
 
 # Lancement app
 app = FastAPI(title = "API MLOps - Anomalies réseau", version = "1.0.0")
-#security = HTTPBasic()
+
 
 # Classes de vérification de formatage des requêtes
 class FeatureRow(BaseModel):
@@ -76,13 +163,30 @@ class PredictionItem(BaseModel):
 class PredictResponse(BaseModel):
     predictions: List[PredictionItem]
 
+
+# 0. /token
+@app.post("/token", response_model=Token, summary="Obtenir un token JWT")
+def login(form_data: OAuth2PasswordRequestForm = Depends()):
+    """Authentification compatible avec le bouton 'Authorize' de Swagger UI."""
+    user = USERS_DB.get(form_data.username)
+    if not user or not verify_password(form_data.password, user["password"]):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Nom d'utilisateur ou mot de passe incorrect",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    access_token = create_access_token(
+        data={"sub": user["username"], "role": user["role"]}
+    )
+    return {"access_token": access_token, "token_type": "bearer"}
+
 # 1. /verify
 @app.get('/verify', summary = 'API running')
 def get_verify():
     return {"message" : "The API is running"}
 
 # 2. /train
-@app.post("/train", status_code=202, summary = 'Re-train the model')
+@app.post("/train", status_code=202, summary = 'Re-train the model', dependencies=[Depends(require_admin)])
 def train_endpoint(background_tasks: BackgroundTasks):
     """Launch the training of the model in the background"""
     background_tasks.add_task(train)

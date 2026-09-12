@@ -27,6 +27,8 @@ dependencies = [
     "statsforecast>=1.7",
     "uvicorn>=0.52",
     "fastapi>=0.141",
+    "pyjwt>=2.14.0",
+    "python-multipart>=0.0.32",
 ]
 
 [dependency-groups]

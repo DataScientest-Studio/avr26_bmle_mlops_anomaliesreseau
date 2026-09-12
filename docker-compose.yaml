@@ -27,8 +27,11 @@ services:
     volumes:
       - ./models:/app/models
       - ./logs:/app/logs
+    env_file:
+      - .env
     environment:
       - PYTHONUNBUFFERED=1
+      - POSTGRES_HOST=db
     depends_on:
       db:
         condition: service_healthy

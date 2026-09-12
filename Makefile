@@ -1,10 +1,13 @@
 .PHONY: up down logs psql sync lock lint test
 
-up:    ## Démarre Postgres
-	docker compose up -d
+up:    ## Démarre Postgres + API
+	docker compose up
 
-down:  ## Arrête Postgres (conserve les données)
+down:  ## Arrête Postgres (conserve les données) + API
 	docker compose down
+
+build: ## Rebuild
+	docker compose build
 
 logs:  ## Suit les logs de la base
 	docker compose logs -f db
@@ -25,4 +28,4 @@ test:
 	uv run pytest -q
 
 init:
-	uv run alembic upgrade head && uv run python -m src.data.load && uv run python -m src.data.build_raw
+	uv run alembic upgrade head && uv run python -m src.data.load && uv run python -m src.data.build_raw && uv run python -m src.data.create_users
