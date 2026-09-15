@@ -70,14 +70,15 @@ def _make_model(kind: str):
 
 
 def load_feature_frame() -> pl.DataFrame:
-    """Charge la table de features depuis le CSV national (périmètre modèle).
+    """Charge la table de features depuis la source configurée (base ou CSV).
 
-    Le jour où la base existe, remplacer par ``store.read_series`` — la suite
-    du code est identique (elle ne dépend que du DataFrame de features).
+    ``settings.source`` (env ``ANOM_SOURCE``) choisit : 'db' (défaut,
+    PostgreSQL schéma raw) ou 'csv'. La suite du code est identique — elle ne
+    dépend que du DataFrame de features.
     """
-    from src.models.data_source import load_features_from_csv
+    from src.models.data_source import load_features
 
-    return load_features_from_csv()
+    return load_features()
 
 
 def train(

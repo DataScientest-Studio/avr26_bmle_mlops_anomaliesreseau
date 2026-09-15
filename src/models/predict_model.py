@@ -77,10 +77,17 @@ def score_from_csv(artifact: dict | None = None) -> pl.DataFrame:
     return score(load_features_from_csv(), artifact)
 
 
+def score_from_source(artifact: dict | None = None) -> pl.DataFrame:
+    """Score depuis la source configurée (base 'db' par défaut, ou 'csv')."""
+    from src.models.data_source import load_features
+
+    return score(load_features(), artifact)
+
+
 def predict_to_file(artifact: dict | None = None) -> int:
-    """Score depuis le CSV et écrit le résultat dans ``data/processed/``."""
+    """Score depuis la source configurée et écrit le résultat dans ``data/processed/``."""
     settings.ensure_dirs()
-    result = score_from_csv(artifact)
+    result = score_from_source(artifact)
     out = settings.data_dir / "processed" / "predictions.parquet"
     out.parent.mkdir(parents=True, exist_ok=True)
     result.write_parquet(out)
@@ -99,7 +106,7 @@ def main() -> None:
     if args.save:
         predict_to_file()
     else:
-        result = score_from_csv()
+        result = score_from_source()
         n_anom = int(result.get_column("is_anomaly").sum())
         logger.info("%d lignes scorées, %d anomalies", result.height, n_anom)
         print(result.tail(10))

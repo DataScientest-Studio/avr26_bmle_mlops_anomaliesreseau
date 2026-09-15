@@ -24,7 +24,7 @@ from sklearn.inspection import permutation_importance
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 
 from src.config.config import settings
-from src.models.data_source import load_features_from_csv
+from src.models.data_source import load_features
 from src.models.predict_model import score
 from src.models.train_model import MODEL_PATH, TARGET
 
@@ -40,7 +40,7 @@ def _load_predictions() -> pl.DataFrame:
     if pq.exists():
         return pl.read_parquet(pq)
     logger.info("predictions.parquet absent → recalcul depuis le CSV")
-    return score(load_features_from_csv())
+    return score(load_features())
 
 
 def main() -> None:
@@ -89,7 +89,7 @@ def main() -> None:
     plt.tight_layout(); plt.savefig(FIG_DIR / "eval_3_score_anomalie.png", dpi=110); plt.close()
 
     # --- Fig 4 : importance des features (permutation, sous-échantillon) ------
-    feats = load_features_from_csv()
+    feats = load_features()
     cols = art["feature_cols"]
     data = feats.drop_nulls(subset=cols + [TARGET]).sort("date_heure").tail(6000)
     Xv, yv = data.select(cols).to_numpy(), data[TARGET].to_numpy()
