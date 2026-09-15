@@ -112,3 +112,70 @@ def load_features_from_csv(path: str | Path | None = None) -> pl.DataFrame:
 
     raw = load_raw_csv(path)
     return build_features(clean_series(raw))
+
+
+def load_raw_from_db() -> pl.DataFrame:
+    """Lit la série modélisable depuis PostgreSQL (schéma ``raw`` de la couche data).
+
+    Source : ``raw.eco2mix_national`` (table typée, PK ``(date_heure, nature)``).
+    Renvoie **le même schéma canonique** que ``load_raw_csv`` : ``date_heure`` en
+    fuseau Europe/Paris, mesures en ``Float64``, lignes à ``consommation`` nulle
+    (les :15/:45, réalisé à 30 min) retirées.
+
+    La config DB vient de ``src.config.settings`` (``POSTGRES_*`` / ``.dsn``),
+    importée paresseusement pour ne pas exiger la base tant qu'on reste en CSV.
+    """
+    import psycopg
+
+    from src.config.settings import settings as db  # config DB de la couche data
+
+    cols = ", ".join(CANONICAL_COLUMNS)
+    query = f"SELECT {cols} FROM {settings.db_raw_table} ORDER BY date_heure, nature"
+    try:
+        with psycopg.connect(db.dsn) as conn:
+            df = pl.read_database(query, connection=conn)
+    except Exception as exc:  # pragma: no cover - dépend d'une base réelle
+        raise RuntimeError(
+            f"Lecture PostgreSQL impossible sur {settings.db_raw_table}. "
+            "Vérifie que la base tourne (docker compose up -d) et que les "
+            "variables POSTGRES_* sont définies — ou force le CSV avec "
+            f"ANOM_SOURCE=csv.\nDétail : {exc}"
+        ) from exc
+
+    exprs: list[pl.Expr] = []
+    dtype = df.schema.get("date_heure")
+    if isinstance(dtype, pl.Datetime):
+        col = pl.col("date_heure")
+        if dtype.time_zone is None:  # timestamp naïf → on suppose UTC
+            col = col.dt.replace_time_zone("UTC")
+        exprs.append(col.dt.convert_time_zone(settings.timezone).alias("date_heure"))
+    for c in NUMERIC_COLUMNS:
+        if c in df.columns:
+            exprs.append(pl.col(c).cast(pl.Float64, strict=False).alias(c))
+    if exprs:
+        df = df.with_columns(exprs)
+    if "consommation" in df.columns:
+        df = df.filter(pl.col("consommation").is_not_null())
+    return df.sort("date_heure")
+
+
+def load_features_from_db() -> pl.DataFrame:
+    """PostgreSQL (schéma raw) -> nettoyage -> table de features."""
+    from src.features.build_features import build_features
+    from src.features.preprocess import clean_series
+
+    return build_features(clean_series(load_raw_from_db()))
+
+
+def load_features(source: str | None = None) -> pl.DataFrame:
+    """Aiguillage source → table de features. 'db' (défaut) ou 'csv'.
+
+    Point d'entrée unique du modèle : ``train_model`` et ``predict_model``
+    l'appellent, la source est pilotée par ``settings.source`` (``ANOM_SOURCE``).
+    """
+    src = (source or settings.source).lower()
+    if src == "db":
+        return load_features_from_db()
+    if src == "csv":
+        return load_features_from_csv()
+    raise ValueError(f"source inconnue : {src!r} (attendu 'db' ou 'csv')")

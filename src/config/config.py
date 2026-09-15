@@ -30,8 +30,14 @@ class Settings(BaseSettings):
     data_dir: Path = REPO_ROOT / "data"
     models_dir: Path = REPO_ROOT / "models"
     logs_dir: Path = REPO_ROOT / "logs"
-    # Source de données du modèle : le CSV national téléchargé depuis ODRE.
+    # Chemin du CSV national (utilisé seulement si source='csv').
     raw_csv_path: Path = REPO_ROOT / "data" / "raw" / "eco2mix-national-cons-def.csv"
+    # Source des données du modèle : 'db' (PostgreSQL, schéma raw) ou 'csv'.
+    # Défaut 'db' — la base est désormais la source. Bascule ANOM_SOURCE=csv pour
+    # travailler hors base (ex. sans docker-compose lancé).
+    source: str = Field(default="db", pattern="^(db|csv)$")
+    # Table source côté base (schéma.table) pour la lecture modèle.
+    db_raw_table: str = "raw.eco2mix_national"
 
     # --- Série -------------------------------------------------------------------
     # RTE publie en heure locale France (l'offset est dans la colonne date-heure).
