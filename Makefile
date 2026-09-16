@@ -29,3 +29,9 @@ test:
 
 init:
 	uv run alembic upgrade head && uv run python -m src.data.load && uv run python -m src.data.build_raw && uv run python -m src.data.create_users
+
+new_data:
+	uv run python -m src.data.split_data_per_year && uv run python -m src.data.load && uv run python -m src.data.build_raw
+
+reset:
+	uv run python -m src.data.reset_last_year

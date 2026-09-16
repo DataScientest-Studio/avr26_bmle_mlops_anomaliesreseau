@@ -10,7 +10,10 @@ SQL = Path(__file__).parent / "sql"
 
 def executer(fichier: str) -> int:
     with psycopg.connect(settings.dsn) as conn, conn.cursor() as cur:
-        cur.execute((SQL / fichier).read_text())
+        sql_content = (SQL / fichier).read_text()
+        statements = [s.strip() for s in sql_content.split(';') if s.strip()]
+        for stmt in statements:
+            cur.execute(stmt)
         inserees = cur.rowcount
         conn.commit()
     return inserees

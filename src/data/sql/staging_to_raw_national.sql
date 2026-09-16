@@ -1,3 +1,5 @@
+TRUNCATE TABLE raw.eco2mix_national;
+
 INSERT INTO raw.eco2mix_national (
     date_heure, nature, perimetre,
     consommation, prevision_j1, prevision_j,
