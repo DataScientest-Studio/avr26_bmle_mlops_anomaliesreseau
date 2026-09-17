@@ -32,6 +32,25 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
       - POSTGRES_HOST=db
+      # L'API logue les entraînements et sert le modèle champion depuis MLflow.
+      - MLFLOW_TRACKING_URI=http://mlflow:5000
+    depends_on:
+      db:
+        condition: service_healthy
+      mlflow:
+        condition: service_started
+    restart: unless-stopped
+
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:v3.1.0
+    container_name: eco2mix_mlflow
+    env_file: .env
+    entrypoint: ["bash", "/start.sh"]
+    volumes:
+      - ./docker/mlflow/start.sh:/start.sh:ro
+      - mlartifacts:/mlartifacts
+    ports:
+      - "5000:5000"
     depends_on:
       db:
         condition: service_healthy
@@ -39,3 +58,4 @@ services:
 
 volumes:
   pgdata:
+  mlartifacts:

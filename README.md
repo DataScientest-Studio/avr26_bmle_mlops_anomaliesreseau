@@ -51,3 +51,36 @@ Project Organization
 --------
 
 <p><small>Project based on the <a target="_blank" href="https://drivendata.github.io/cookiecutter-data-science/">cookiecutter data science project template</a>. #cookiecutterdatascience</small></p>
+
+MLflow — suivi d'expériences & versioning
+------------
+
+Chaque entraînement est **loggé** dans MLflow (params, métriques, artefacts) et le
+modèle est **versionné** au Model Registry, avec promotion automatique d'un
+**champion** (la version dont la MAE de validation est la plus basse). Le
+`predict` sert **toujours le champion**, pas le dernier entraîné ; repli
+automatique sur `models/model.joblib` si MLflow est indisponible.
+
+**Lancer**
+
+```bash
+docker compose up -d db mlflow          # Postgres + serveur MLflow (UI: http://localhost:5000)
+export MLFLOW_TRACKING_URI=http://localhost:5000
+uv run python -m src.models.train_model     # → un run + une version dans MLflow
+uv run python -m src.models.predict_model --save
+```
+
+Sans `MLFLOW_TRACKING_URI`, MLflow est désactivé (on garde le joblib local).
+
+**Configuration** (variables d'environnement)
+
+| Variable | Rôle | Défaut |
+|---|---|---|
+| `MLFLOW_TRACKING_URI` | serveur MLflow ; vide = désactivé | — |
+| `ANOM_MLFLOW_EXPERIMENT` | nom d'expérience | `anomalies_conso` |
+| `ANOM_MLFLOW_MODEL_NAME` | modèle enregistré | `anomalies_conso_national` |
+| `ANOM_MLFLOW_CHAMPION_ALIAS` | alias du meilleur modèle | `champion` |
+
+Back-end MLflow = base `mlflow` sur le PostgreSQL du projet (créée au démarrage du
+service) ; artefacts sur le volume `mlartifacts`. Après ajout de `mlflow` aux
+dépendances : `uv sync` puis `make lock`.

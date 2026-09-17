@@ -63,6 +63,14 @@ class Settings(BaseSettings):
     # Zone de vacances scolaires par défaut (A/B/C). Île-de-France = zone C.
     school_zone: str = Field(default="C", pattern="^[ABC]$")
 
+    # --- MLflow (suivi d'expériences + versioning de modèle) --------------------
+    # URI du serveur de suivi. Vide → MLflow désactivé (repli sur le joblib local).
+    # La variable standard MLFLOW_TRACKING_URI, si définie, a priorité.
+    mlflow_tracking_uri: str = ""
+    mlflow_experiment: str = "anomalies_conso"
+    mlflow_model_name: str = "anomalies_conso_national"
+    mlflow_champion_alias: str = "champion"
+
     def ensure_dirs(self) -> None:
         """Crée les répertoires data/models/logs s'ils n'existent pas."""
         for d in (self.data_dir, self.models_dir, self.logs_dir):

@@ -146,6 +146,13 @@ def train(
     (settings.logs_dir / f"train_{version}.json").write_text(
         json.dumps(artifact["metadata"], indent=2)
     )
+
+    # Suivi d'expérience + versioning MLflow (non bloquant si MLflow est absent).
+    from src.models.mlflow_utils import log_training_run
+
+    run_id = log_training_run(artifact, extra_params={"valid_frac": valid_frac})
+    if run_id:
+        artifact["metadata"]["mlflow_run_id"] = run_id
     return artifact
 
 
