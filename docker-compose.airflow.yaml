@@ -1,0 +1,108 @@
+# Stack Airflow — fichier séparé, pour ne pas toucher au docker-compose.yaml
+# de l'équipe et éviter les conflits Git.
+#
+# Compose ne découvre PAS ce fichier tout seul : il doit être listé dans
+# COMPOSE_FILE. Dans .env :
+#   COMPOSE_FILE=docker-compose.yaml:docker-compose.airflow.yaml
+# ou explicitement :
+#   docker compose -f docker-compose.yaml -f docker-compose.airflow.yaml ...
+#
+# Le profil "airflow" fait que `docker compose up` ne démarre RIEN d'ici :
+# les coéquipiers gardent leur `make up` habituel, base + API seulement.
+
+x-airflow-common: &airflow-common
+  build:
+    context: .
+    dockerfile: ./docker/airflow/Dockerfile
+  image: eco2mix/airflow:latest
+  profiles: ["airflow"]
+  environment: &airflow-env
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
+    AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY}
+    # Rôle et base dédiés, créés par `make db-meta`.
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:${AIRFLOW_DB_PASSWORD}@db:5432/airflow
+    AIRFLOW__WEBSERVER__EXPOSE_CONFIG: "true"
+    # Airflow stocke ses dates en UTC ; ceci ne change que l'affichage.
+    AIRFLOW__CORE__DEFAULT_TIMEZONE: Europe/Paris
+    AIRFLOW__WEBSERVER__DEFAULT_UI_TIMEZONE: Europe/Paris
+    PYTHONUNBUFFERED: "1"
+    # Identifiants de la base MÉTIER, pour les tâches qui l'interrogeront.
+    # Distincts du rôle `airflow` ci-dessus, qui ne sert qu'aux métadonnées.
+    POSTGRES_HOST: db
+    POSTGRES_PORT: "5432"
+    POSTGRES_DB: ${POSTGRES_DB}
+    POSTGRES_USER: ${POSTGRES_USER}
+    POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+  volumes:
+    - ./dags:/opt/airflow/dags
+    - ./logs/airflow:/opt/airflow/logs
+    - ./plugins:/opt/airflow/plugins
+    # Permet au DockerOperator de piloter le démon Docker de l'hôte.
+    # La SOURCE varie selon la machine (OrbStack, Docker Desktop, Linux) ;
+    # la cible reste /var/run/docker.sock, donc le code des DAGs ne change pas.
+    # Renseigné par `make airflow-prep-env`.
+    - ${DOCKER_SOCK:-/var/run/docker.sock}:/var/run/docker.sock
+  user: "${AIRFLOW_UID:-50000}:0"
+  # GID du groupe propriétaire du socket, vu DEPUIS LE CONTENEUR.
+  # macOS (OrbStack, Docker Desktop) : 0, le socket appartient à root dans la VM.
+  # Linux : la valeur de `stat -c '%g' /var/run/docker.sock`.
+  group_add: ["${DOCKER_GID:-0}"]
+  # Accès à un service qui tourne sur l'hôte, hors conteneur — par exemple un
+  # MLflow lancé à la main : http://host.docker.internal:5000
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
+  depends_on:
+    db:
+      condition: service_healthy
+
+services:
+  airflow-init:
+    <<: *airflow-common
+    container_name: eco2mix_airflow_init
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        set -e
+        airflow db migrate
+        airflow users create \
+          --username "${AIRFLOW_ADMIN_USER:-admin}" \
+          --password "${AIRFLOW_ADMIN_PASSWORD:-admin}" \
+          --firstname Admin --lastname Local --role Admin \
+          --email admin@example.com || true
+        echo "Initialisation terminée."
+    restart: on-failure
+
+  airflow-webserver:
+    <<: *airflow-common
+    container_name: eco2mix_airflow_web
+    command: webserver
+    ports:
+      - "${AIRFLOW_PORT:-8080}:8080"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
+      interval: 15s
+      timeout: 10s
+      retries: 6
+      start_period: 45s
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  airflow-scheduler:
+    <<: *airflow-common
+    container_name: eco2mix_airflow_scheduler
+    command: scheduler
+    healthcheck:
+      test: ["CMD-SHELL", "airflow jobs check --job-type SchedulerJob --hostname \"$${HOSTNAME}\""]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 45s
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    restart: unless-stopped

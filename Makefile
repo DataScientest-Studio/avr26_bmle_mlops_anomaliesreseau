@@ -1,4 +1,9 @@
 .PHONY: up down logs psql sync lock lint test
+# Charge les variables du fichier .env dans le contexte de make
+include .env
+# Exporte toutes les variables (du .env + celles déjà définies) vers l'environnement
+# des sous-processus, y compris docker compose
+export
 
 up:    ## Démarre Postgres + API
 	docker compose up
@@ -35,3 +40,49 @@ new_data:
 
 reset:
 	uv run python -m src.data.reset_last_year
+
+db-meta: ## Crée les rôles et bases de métadonnées
+	docker compose up -d db
+	@docker compose exec -T db psql -U eco2mix -d eco2mix -v ON_ERROR_STOP=1 \
+		-v mlflow_pwd="$(MLFLOW_DB_PASSWORD)" \
+		-v airflow_pwd="$(AIRFLOW_DB_PASSWORD)" \
+		-f - < db/init/01-create-databases.sql
+
+airflow-prep-env: ## Génère les variables d'env dépendantes de la machine (idempotent)
+	@[ -s .env ] && [ -n "$$(tail -c1 .env)" ] && printf '\n' >> .env || true
+	@sock=$$(docker context inspect --format '{{.Endpoints.docker.Host}}' | sed 's|unix://||'); \
+	if [ "$$(uname -s)" = "Darwin" ]; then \
+	  uid=50000; gid=0; \
+	else \
+	  uid=$$(id -u); gid=$$(stat -c '%g' "$$sock"); \
+	fi; \
+	grep -q '^DOCKER_SOCK='  .env || echo "DOCKER_SOCK=$$sock" >> .env; \
+	grep -q '^AIRFLOW_UID='  .env || echo "AIRFLOW_UID=$$uid"  >> .env; \
+	grep -q '^DOCKER_GID='   .env || echo "DOCKER_GID=$$gid"   >> .env; \
+	grep -q '^AIRFLOW_FERNET_KEY=' .env || echo "AIRFLOW_FERNET_KEY=$$(docker run --rm python:3.12-slim sh -c "pip -q install cryptography && python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'")" >> .env
+	@echo "--- variables machine ---"
+	@grep -E '^(DOCKER_SOCK|AIRFLOW_UID|DOCKER_GID|AIRFLOW_FERNET_KEY)=' .env
+
+airflow-build: ## Construit l'image Airflow
+	docker compose --profile airflow build
+
+airflow: db-meta ## Démarre la stack Airflow (init + webserver + scheduler)
+	mkdir -p dags logs/airflow plugins
+	docker compose --profile airflow up -d
+	@echo "Interface : http://localhost:$(AIRFLOW_PORT)"
+
+airflow-down: ## Arrête Airflow, conserve les métadonnées
+	docker compose --profile airflow down
+
+airflow-logs: ## Suit les logs du scheduler
+	docker compose logs -f airflow-scheduler
+
+airflow-shell: ## Shell dans le scheduler
+	docker compose exec airflow-scheduler bash
+
+airflow-reset: ## Remet à zéro les métadonnées Airflow
+	docker compose --profile airflow down
+	docker compose exec -T db psql -U $(POSTGRES_USER) -d postgres -v ON_ERROR_STOP=1 \
+		-c "DROP DATABASE IF EXISTS airflow;" \
+		-c "CREATE DATABASE airflow OWNER airflow;"
+	$(MAKE) airflow
