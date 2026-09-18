@@ -31,13 +31,30 @@ def load_artifact(path=None) -> dict:
     return joblib.load(path or MODEL_PATH)
 
 
+def resolve_artifact() -> dict:
+    """Récupère le modèle à servir : champion MLflow, sinon joblib local.
+
+    Priorité au **modèle champion du registry** (comme demandé par le mentor :
+    le predict sert toujours le meilleur modèle). Repli automatique sur le
+    ``model.joblib`` si MLflow est éteint ou sans champion.
+    """
+    from src.models.mlflow_utils import load_champion_artifact, mlflow_enabled
+
+    if mlflow_enabled():
+        try:
+            return load_champion_artifact()
+        except Exception as exc:
+            logger.warning("Champion MLflow indisponible, repli joblib (%s)", exc)
+    return load_artifact()
+
+
 def score(feats: pl.DataFrame, artifact: dict | None = None) -> pl.DataFrame:
     """Scoring d'anomalie sur une table de features déjà construite.
 
     Renvoie ``date_heure, y_true, y_pred, residual, anomaly_score, is_anomaly,
     model_version``.
     """
-    artifact = artifact or load_artifact()
+    artifact = artifact or resolve_artifact()
 
     cols = artifact["feature_cols"]
     target = artifact["target"]
