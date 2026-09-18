@@ -1,21 +1,58 @@
+import hashlib
+import hmac
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
-from fastapi import FastAPI, HTTPException, status, Depends, BackgroundTasks
-from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from typing import List, Optional
-from pydantic import BaseModel
-import polars as pl
-from src.models.predict_model import score
-from src.models.train_model import train
+
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, status
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 import jwt
 from jwt.exceptions import InvalidTokenError
-
+import mlflow.pyfunc
+from mlflow.tracking import MlflowClient
+import polars as pl
+from pydantic import BaseModel
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from src.config.settings import settings
 from src.data.create_users import User as DBUser
-import hashlib
-import hmac
+from src.models.train_model import train
+from src.models.predict_model import score
+
+
+MODEL_NAME = "anomalies_conso_national" 
+MODEL_ALIAS = "champion"
+MODEL_URI = f"models:/{MODEL_NAME}@{MODEL_ALIAS}"
+
+model_state = {
+    "model": None,
+    "version": "unknown",
+    "is_training": False,
+}
+
+def load_best_model():
+    """Récupère le modèle champion depuis MLflow et met à jour l'état en mémoire."""
+    client = MlflowClient()
+    try:
+        model_version_details = client.get_model_version_by_alias(
+            MODEL_NAME, MODEL_ALIAS
+        )
+        version = str(model_version_details.version)
+    except Exception:
+        version = "fallback"
+
+    loaded_model = mlflow.pyfunc.load_model(MODEL_URI)
+    model_state["model"] = loaded_model
+    model_state["version"] = version
+
+def run_training_wrapper():
+    """Exécute l'entraînement synchrone existant, puis recharge le modèle."""
+    try:
+        train() 
+        load_best_model()
+    finally:
+        model_state["is_training"] = False    
 
 # ==============================
 # Gestion authentification
@@ -94,8 +131,16 @@ def require_admin(current_user: User = Depends(get_current_user)) -> User:
         )
     return current_user
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Chargement initial du champion au boot de l'API
+    load_best_model()
+    yield
+    model_state.clear()
+
 # Lancement app
-app = FastAPI(title = "API MLOps - Anomalies réseau", version = "1.0.0")
+app = FastAPI(title = "API MLOps - Anomalies réseau", version = "1.0.0", lifespan = lifespan)
 
 
 # Classes de vérification de formatage des requêtes
@@ -186,19 +231,36 @@ def get_verify():
     return {"message" : "The API is running"}
 
 # 2. /train
-@app.post("/train", status_code=202, summary = 'Re-train the model', dependencies=[Depends(require_admin)])
+@app.post("/train", status_code=202, summary="Re-train the model", dependencies=[Depends(require_admin)])
 def train_endpoint(background_tasks: BackgroundTasks):
     """Launch the training of the model in the background"""
-    background_tasks.add_task(train)
-    return {"status": "Training started in background"}
+    if model_state["is_training"]:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Un entraînement est déjà en cours d'exécution.",
+        )
+    model_state["is_training"] = True
+    background_tasks.add_task(run_training_wrapper)
+    return {
+        "status": "Training started in background. Model will hot-reload upon completion."
+    }
 
 # 3. /predict
 @app.post("/predict", response_model=PredictResponse)
 def predict_endpoint(request: PredictRequest):
     """Predicts """
+    model = model_state.get("model")
+    if model is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Model did not load properly",
+        )
+
     try:
         input_data = pl.DataFrame([row.model_dump() for row in request.features])
+        version = model_state.get("version", "unknown")
         preds = score(feats=input_data)
         return {"predictions": preds.to_dicts()}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erreur d'inférence : {str(e)}")
+
