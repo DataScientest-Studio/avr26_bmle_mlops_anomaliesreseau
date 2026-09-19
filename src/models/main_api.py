@@ -18,7 +18,9 @@ from sqlalchemy.orm import Session
 from src.config.settings import settings
 from src.data.create_users import User as DBUser
 from src.models.train_model import train
-from src.models.predict_model import score
+from src.models.predict_model import score, resolve_artifact
+
+
 
 
 MODEL_NAME = "anomalies_conso_national" 
@@ -28,6 +30,7 @@ MODEL_URI = f"models:/{MODEL_NAME}@{MODEL_ALIAS}"
 model_state = {
     "model": None,
     "version": "unknown",
+    "artifact": None,
     "is_training": False,
 }
 
@@ -40,11 +43,17 @@ def load_best_model():
         )
         version = str(model_version_details.version)
     except Exception:
-        version = "fallback"
+        version = "champion"
 
     loaded_model = mlflow.pyfunc.load_model(MODEL_URI)
     model_state["model"] = loaded_model
     model_state["version"] = version
+
+    artifact_dict = resolve_artifact()
+    artifact_dict["model"] = loaded_model
+    artifact_dict["version"] = version
+
+    model_state["artifact"] = artifact_dict
 
 def run_training_wrapper():
     """Exécute l'entraînement synchrone existant, puis recharge le modèle."""
@@ -248,19 +257,27 @@ def train_endpoint(background_tasks: BackgroundTasks):
 # 3. /predict
 @app.post("/predict", response_model=PredictResponse)
 def predict_endpoint(request: PredictRequest):
-    """Predicts """
-    model = model_state.get("model")
-    if model is None:
+    """Predicts using the model with the @champion tag"""
+    artifact = model_state.get("artifact")
+    if artifact is None or artifact.get("model") is None:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Model did not load properly",
         )
-
     try:
         input_data = pl.DataFrame([row.model_dump() for row in request.features])
-        version = model_state.get("version", "unknown")
-        preds = score(feats=input_data)
+        preds = score(feats=input_data, artifact=artifact) 
         return {"predictions": preds.to_dicts()}
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erreur d'inférence : {str(e)}")
 
+
+# 4. /reload
+@app.post("/reload", status_code=200, summary="Re-load the model", dependencies=[Depends(require_admin)])
+def reload_model():
+    """Reload the model with the tag @champion"""
+    previous_best_model = model_state
+    load_best_model()
+    new_best_model = model_state
+    return {"old_model": f"{MODEL_NAME}"+":"+f"{previous_best_model['version']}", "new_model": f"{MODEL_NAME}"+":"+f"{new_best_model['version']}"}

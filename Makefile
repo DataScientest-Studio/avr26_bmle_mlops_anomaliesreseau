@@ -19,6 +19,8 @@ down:  ## Arrête Postgres (conserve les données) + API
 build: ## Rebuild
 	docker compose build
 
+restart: down build up
+
 logs:  ## Suit les logs de la base
 	docker compose logs -f db
 
