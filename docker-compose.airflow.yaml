@@ -9,6 +9,8 @@
 #
 # Le profil "airflow" fait que `docker compose up` ne démarre RIEN d'ici :
 # les coéquipiers gardent leur `make up` habituel, base + API seulement.
+# Les services Airflow n'apparaissent qu'avec --profile airflow, y compris
+# dans les commandes de diagnostic : docker compose --profile airflow config
 
 x-airflow-common: &airflow-common
   build:
@@ -28,17 +30,38 @@ x-airflow-common: &airflow-common
     AIRFLOW__CORE__DEFAULT_TIMEZONE: Europe/Paris
     AIRFLOW__WEBSERVER__DEFAULT_UI_TIMEZONE: Europe/Paris
     PYTHONUNBUFFERED: "1"
-    # Identifiants de la base MÉTIER, pour les tâches qui l'interrogeront.
-    # Distincts du rôle `airflow` ci-dessus, qui ne sert qu'aux métadonnées.
+
+    # --- identifiants de la base MÉTIER ---------------------------------
+    # Distincts du rôle `airflow` ci-dessus, qui ne sert qu'aux métadonnées
+    # d'orchestration. Ceux-ci sont transmis aux conteneurs de tâches.
     POSTGRES_HOST: db
     POSTGRES_PORT: "5432"
     POSTGRES_DB: ${POSTGRES_DB}
     POSTGRES_USER: ${POSTGRES_USER}
     POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+
+    # --- contrat du DAG retrain_eco2mix ---------------------------------
+    # Image applicative exécutée par le DockerOperator.
+    TRAINER_IMAGE: ${TRAINER_IMAGE:-eco2mix-api}
+    # Réseau que rejoignent les conteneurs de tâches, pour joindre db et mlflow.
+    # Vérifier : docker network ls | grep eco2mix
+    APP_NETWORK: ${APP_NETWORK:-eco2mix_default}
+    # Chemin du projet SUR L'HÔTE, indispensable aux montages du
+    # DockerOperator : le démon Docker résout les binds dans SON référentiel,
+    # pas dans celui du conteneur Airflow. Renseigné par make airflow-prep-env.
+    # Sans lui, le DAG lève KeyError dès l'import — c'est volontaire, un échec
+    # bruyant vaut mieux qu'un montage silencieusement vide.
+    PROJECT_DIR: ${PROJECT_DIR}
+    # Port 5000 = écoute INTERNE du conteneur mlflow sur le réseau Compose.
+    # MLFLOW_PORT (5001 sur macOS, où AirPlay occupe le 5000) ne concerne que
+    # l'accès navigateur.
+    MLFLOW_TRACKING_URI: ${MLFLOW_TRACKING_URI:-http://mlflow:5000}
+
   volumes:
     - ./dags:/opt/airflow/dags
     - ./logs/airflow:/opt/airflow/logs
-    - ./plugins:/opt/airflow/plugins
+    # Zone servie à l'API : utile pour inspecter l'artefact depuis Airflow.
+    - ./models:/opt/airflow/models
     # Permet au DockerOperator de piloter le démon Docker de l'hôte.
     # La SOURCE varie selon la machine (OrbStack, Docker Desktop, Linux) ;
     # la cible reste /var/run/docker.sock, donc le code des DAGs ne change pas.
@@ -49,8 +72,8 @@ x-airflow-common: &airflow-common
   # macOS (OrbStack, Docker Desktop) : 0, le socket appartient à root dans la VM.
   # Linux : la valeur de `stat -c '%g' /var/run/docker.sock`.
   group_add: ["${DOCKER_GID:-0}"]
-  # Accès à un service qui tourne sur l'hôte, hors conteneur — par exemple un
-  # MLflow lancé à la main : http://host.docker.internal:5000
+  # Accès à un service qui tournerait sur l'hôte hors conteneur. Conservé pour
+  # le cas où MLflow serait lancé à la main : http://host.docker.internal:5000
   extra_hosts:
     - "host.docker.internal:host-gateway"
   depends_on:

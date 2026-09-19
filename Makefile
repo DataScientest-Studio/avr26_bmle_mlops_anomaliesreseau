@@ -1,4 +1,6 @@
-.PHONY: up down logs psql sync lock lint test
+.PHONY: up down build logs psql sync lock lint test init new_data reset \
+        db-meta airflow-prep-env airflow-build airflow airflow-down \
+        airflow-logs airflow-shell airflow-reset trainer-stub
 ifeq (,$(wildcard .env))
 $(error .env absent — lancez d'abord : "cp .env.example .env")
 endif
@@ -53,7 +55,7 @@ db-meta: ## Crée les rôles et bases de métadonnées
 
 airflow-prep-env: ## Génère les variables dépendantes de la machine (macOS + Linux)
 	@tmp=$$(mktemp); \
-	grep -vE '^(DOCKER_SOCK|AIRFLOW_UID|DOCKER_GID|AIRFLOW_FERNET_KEY)=$$' .env > "$$tmp" \
+	grep -vE '^(DOCKER_SOCK|AIRFLOW_UID|DOCKER_GID|AIRFLOW_FERNET_KEY|PROJECT_DIR)=$$' .env > "$$tmp" \
 	  && mv "$$tmp" .env
 	@[ -s .env ] && [ -n "$$(tail -c1 .env)" ] && printf '\n' >> .env || true
 	@sock=$$(docker context inspect --format '{{.Endpoints.docker.Host}}' | sed 's|unix://||'); \
@@ -64,15 +66,17 @@ airflow-prep-env: ## Génère les variables dépendantes de la machine (macOS + 
 	grep -qE '^DOCKER_SOCK=.+'        .env || echo "DOCKER_SOCK=$$sock" >> .env; \
 	grep -qE '^AIRFLOW_UID=.+'        .env || echo "AIRFLOW_UID=$$uid"  >> .env; \
 	grep -qE '^DOCKER_GID=.+'         .env || echo "DOCKER_GID=$$gid"   >> .env; \
+	grep -qE '^PROJECT_DIR=.+'        .env || echo "PROJECT_DIR=$$(pwd)" >> .env; \
 	grep -qE '^AIRFLOW_FERNET_KEY=.+' .env || echo "AIRFLOW_FERNET_KEY=$$(docker run --rm python:3.12-slim sh -c "pip -q install --root-user-action=ignore cryptography && python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'")" >> .env
 	@echo "--- variables machine ---"
-	@grep -E '^(DOCKER_SOCK|AIRFLOW_UID|DOCKER_GID|AIRFLOW_FERNET_KEY)=' .env
+	@grep -E '^(DOCKER_SOCK|AIRFLOW_UID|DOCKER_GID|PROJECT_DIR|AIRFLOW_FERNET_KEY)=' .env
 
 airflow-build: ## Construit l'image Airflow
 	docker compose --profile airflow build
 
-airflow: db-meta ## Démarre la stack Airflow (init + webserver + scheduler)
-	mkdir -p dags logs/airflow plugins
+airflow: ## Démarre la stack Airflow (init + webserver + scheduler)
+	@[ "$(PROJECT_DIR)" = "$$(pwd)" ] || { echo "PROJECT_DIR obsolète — relancez make airflow-prep-env"; exit 1; }
+	mkdir -p dags logs/airflow plugins models models_staging
 	docker compose --profile airflow up -d
 	@echo "Interface : http://localhost:$(AIRFLOW_PORT)"
 
@@ -91,3 +95,6 @@ airflow-reset: ## Remet à zéro les métadonnées Airflow
 		-c "DROP DATABASE IF EXISTS airflow;" \
 		-c "CREATE DATABASE airflow OWNER airflow;"
 	$(MAKE) airflow
+
+trainer-stub: ## Construit l'image simulant l'application de l'équipe
+	docker build -t eco2mix/trainer-stub:latest docker/trainer-stub/
