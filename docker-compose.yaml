@@ -15,6 +15,8 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+    networks:
+      - mlops-net
     restart: unless-stopped
 
   api:
@@ -33,12 +35,14 @@ services:
       - PYTHONUNBUFFERED=1
       - POSTGRES_HOST=db
       # L'API logue les entraînements et sert le modèle champion depuis MLflow.
-      - MLFLOW_TRACKING_URI=${MLFLOW_TRACKING_URI} #http://mlflow:5000
+      - MLFLOW_TRACKING_URI=http://mlflow:5000
     depends_on:
       db:
         condition: service_healthy
       mlflow:
         condition: service_started
+    networks:
+      - mlops-net
     restart: unless-stopped
 
   mlflow:
@@ -50,12 +54,51 @@ services:
       - ./docker/mlflow/start.sh:/start.sh:ro
       - mlartifacts:/mlartifacts
     ports:
-      - "${MLFLOW_PORT:-5000}:5000"
+      - "5000:5000"
     depends_on:
       db:
         condition: service_healthy
+    networks:
+      - mlops-net
     restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    restart: unless-stopped
+    volumes:
+      - ./prometheus.yaml:/etc/prometheus/prometheus.yaml:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yaml'
+      - '--storage.tsdb.path=/prometheus'
+    ports:
+      - "9090:9090"
+    networks:
+      - mlops-net
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    depends_on:
+      - prometheus
+    networks:
+      - mlops-net
+
+networks:
+  mlops-net:
+    driver: bridge
 
 volumes:
   pgdata:
   mlartifacts:
+  prometheus_data:
+  grafana_data:

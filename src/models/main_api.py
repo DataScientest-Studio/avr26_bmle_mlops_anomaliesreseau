@@ -6,6 +6,7 @@ from typing import List, Optional
 
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from prometheus_fastapi_instrumentator import Instrumentator
 import jwt
 from jwt.exceptions import InvalidTokenError
 import mlflow.pyfunc
@@ -151,6 +152,8 @@ async def lifespan(app: FastAPI):
 # Lancement app
 app = FastAPI(title = "API MLOps - Anomalies réseau", version = "1.0.0", lifespan = lifespan)
 
+# Lancement prometheus sur route cible
+Instrumentator().instrument(app).expose(app, endpoint="/metrics")
 
 # Classes de vérification de formatage des requêtes
 class FeatureRow(BaseModel):
