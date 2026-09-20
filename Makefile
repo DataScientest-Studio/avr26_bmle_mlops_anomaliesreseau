@@ -1,6 +1,6 @@
-.PHONY: up down build logs psql sync lock lint test init new_data reset \
+.PHONY: up down build restart logs psql sync lock lint test init new_data reset \
         db-meta airflow-prep-env airflow-build airflow airflow-down \
-        airflow-logs airflow-shell airflow-reset trainer-stub
+        airflow-logs airflow-shell airflow-reset mlflow mlflow-build mlflow-down mlflow-logs mlflow-champion
 ifeq (,$(wildcard .env))
 $(error .env absent — lancez d'abord : "cp .env.example .env")
 endif
@@ -98,5 +98,19 @@ airflow-reset: ## Remet à zéro les métadonnées Airflow
 		-c "CREATE DATABASE airflow OWNER airflow;"
 	$(MAKE) airflow
 
-trainer-stub: ## Construit l'image simulant l'application de l'équipe
-	docker build -t eco2mix/trainer-stub:latest docker/trainer-stub/
+mlflow-build: ## construit l'image, sans démarrer
+	docker compose build mlflow
+
+mlflow: ## Démarre MLflow seul et affiche l'URL
+	docker compose up -d mlflow
+	@echo "Interface : http://localhost:$(MLFLOW_PORT)"
+
+mlflow-down: ## Arrête mlflow
+	docker compose down mlflow
+
+mlflow-logs: ## Suit les logs du serveur MLflow
+	docker compose logs -f mlflow
+
+mlflow-champion: ## Affiche la version du modèle portant l'alias champion
+	@docker compose exec -T db psql -U $(POSTGRES_USER) -d mlflow -t -A -F' | ' \
+		-c "SELECT name, alias, version FROM registered_model_aliases;"
