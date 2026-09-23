@@ -88,7 +88,7 @@ airflow-prep-env: ## Génère les variables dépendantes de la machine (macOS + 
 	grep -qE '^PROJECT_DIR=.+'        .env || echo "PROJECT_DIR=$$(pwd)" >> .env; \
 	grep -qE '^AIRFLOW_FERNET_KEY=.+' .env || echo "AIRFLOW_FERNET_KEY=$$(docker run --rm python:3.12-slim sh -c "pip -q install --root-user-action=ignore cryptography && python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'")" >> .env
 	@echo "--- variables machine ---"
-	@grep -E '^(DOCKER_SOCK|AIRFLOW_UID|DOCKER_GID|PROJECT_DIR|AIRFLOW_FERNET_KEY)=' .env
+	@grep -E '^(DOCKER_SOCK|AIRFLOW_UID|DOCKER_GID|PROJECT_DIR|AIRFLOW_FERNET_KEY)=' .env | sed -E 's/(FERNET_KEY)=.*/\1=********/'
 
 airflow-build: ## Construit l'image Airflow
 	docker compose --profile airflow build
@@ -131,3 +131,36 @@ mlflow-logs: ## Suit les logs du serveur MLflow
 mlflow-champion: ## Affiche la version du modèle portant l'alias champion
 	@docker compose exec -T db psql -U $(POSTGRES_USER) -d mlflow -t -A -F' | ' \
 		-c "SELECT name, alias, version FROM registered_model_aliases;"
+
+silo-prep-env: ## Génère les secrets Silo manquants dans .env (n'écrase rien)
+	@tmp=$$(mktemp); \
+	grep -vE '^(SILO_ROOT_USER|SILO_ROOT_PASSWORD|SILO_MLFLOW_ACCESS_KEY|SILO_MLFLOW_SECRET_KEY)=$$' .env > "$$tmp" \
+	  && mv "$$tmp" .env
+	@[ -s .env ] && [ -n "$$(tail -c1 .env)" ] && printf '\n' >> .env || true
+	@grep -qE '^SILO_ROOT_USER=.+'         .env || echo "SILO_ROOT_USER=silo-admin"                          >> .env
+	@grep -qE '^SILO_ROOT_PASSWORD=.+'     .env || echo "SILO_ROOT_PASSWORD=$$(openssl rand -hex 24)"         >> .env
+	@grep -qE '^SILO_MLFLOW_ACCESS_KEY=.+' .env || echo "SILO_MLFLOW_ACCESS_KEY=mlflow-app"                   >> .env
+	@grep -qE '^SILO_MLFLOW_SECRET_KEY=.+' .env || echo "SILO_MLFLOW_SECRET_KEY=$$(openssl rand -hex 24)"     >> .env
+	@echo "--- variables Silo (secrets masqués) ---"
+	@grep -E '^SILO_' .env | sed -E 's/(PASSWORD|SECRET_KEY)=.*/\1=********/'
+
+silo-check: ## Vérifie que les variables Silo sont renseignées
+	@for v in SILO_ROOT_USER SILO_ROOT_PASSWORD SILO_MLFLOW_ACCESS_KEY SILO_MLFLOW_SECRET_KEY; do \
+	  [ -n "$$(printenv $$v)" ] || { echo "$$v vide — lancez : make silo-prep-env"; exit 1; }; \
+	done
+
+silo: silo-check ## Démarre Silo et initialise le bucket MLflow
+	docker compose up -d silo silo-init
+	@echo "Console : http://127.0.0.1:9001"
+
+silo-init: silo-check ## Relance l'initialisation (bucket, politique, utilisateur)
+	docker compose run --rm silo-init
+
+silo-update: silo-check ## Met à jour Silo vers le dernier patch et rescanne l'image
+	docker compose pull silo silo-init
+	docker run --rm aquasec/trivy:latest image --severity HIGH,CRITICAL --scanners vuln pgsty/silo:latest
+	docker compose up -d silo
+	docker compose exec silo silo --version
+
+silo-logs: ## Suit les logs de Silo
+	docker compose logs -f silo

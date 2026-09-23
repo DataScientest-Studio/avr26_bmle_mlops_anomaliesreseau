@@ -20,7 +20,7 @@ services:
     restart: unless-stopped
 
   api:
-    build: 
+    build:
       context: .
       dockerfile: ./src/models/Dockerfile
     container_name: anomaliesreseau_api
@@ -84,6 +84,54 @@ services:
       - mlops-net
     restart: unless-stopped
 
+  # --- Stockage objet S3 pour les artefacts MLflow -----------------------
+  # Silo : fork maintenu de MinIO. L'image amont minio/minio a été retirée
+  # de Docker Hub le 11/09/2026 et les versions figées ne sont plus patchées.
+  # `latest` pour recevoir les correctifs : mise à jour via `make silo-update`,
+  # Compose ne retélécharge jamais une image déjà présente.
+  silo:
+    image: pgsty/silo:latest
+    command: ["server", "/data", "--console-address", ":9001"]
+    # Variables explicites plutôt que env_file : Silo ne reçoit que ses
+    # propres identifiants, pas les secrets Postgres ou Airflow.
+    environment:
+      MINIO_ROOT_USER: ${SILO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${SILO_ROOT_PASSWORD}
+    healthcheck:
+      test: ["CMD-SHELL", "MC_HOST_local=http://$${MINIO_ROOT_USER}:$${MINIO_ROOT_PASSWORD}@localhost:9000 mcli ready local"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    ports:
+      # Console web seulement, et seulement depuis la machine locale.
+      # L'API S3 (9000) reste interne au réseau Docker : seul MLflow y accède.
+      - "127.0.0.1:9001:9001"
+    volumes:
+      - silodata:/data
+    networks:
+      - mlops-net
+    restart: unless-stopped
+
+  # Conteneur éphémère : crée le bucket, la politique et l'utilisateur
+  # applicatif, puis s'arrête. Idempotent, relancé à chaque `up`.
+  silo-init:
+    image: pgsty/silo:latest
+    entrypoint: ["sh", "/init/init.sh"]
+    environment:
+      MINIO_ROOT_USER: ${SILO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${SILO_ROOT_PASSWORD}
+      SILO_MLFLOW_ACCESS_KEY: ${SILO_MLFLOW_ACCESS_KEY}
+      SILO_MLFLOW_SECRET_KEY: ${SILO_MLFLOW_SECRET_KEY}
+    volumes:
+      - ./docker/silo:/init:ro
+    depends_on:
+      silo:
+        condition: service_healthy
+    networks:
+      - mlops-net
+    restart: "no"
+
   prometheus:
     image: prom/prometheus:latest
     container_name: prometheus
@@ -124,3 +172,4 @@ volumes:
   mlartifacts:
   prometheus_data:
   grafana_data:
+  silodata:
