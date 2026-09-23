@@ -103,6 +103,15 @@ def train(
     X = data.select(feature_cols).to_numpy()
     y = data.get_column(TARGET).to_numpy()
 
+    # Empreinte du jeu d'entraînement (versioning data) : identifie de façon
+    # déterministe les données exactes ayant servi au run, sans les dupliquer.
+    import hashlib
+
+    _h = hashlib.sha256()
+    _h.update(X.tobytes())
+    _h.update(y.tobytes())
+    data_hash = _h.hexdigest()[:16]
+
     # Découpe temporelle (pas de shuffle : on respecte la causalité).
     n_valid = max(1, int(data.height * valid_frac))
     X_tr, y_tr = X[:-n_valid], y[:-n_valid]
@@ -133,6 +142,8 @@ def train(
             "n_valid": int(len(y_va)),
             "mae_valid": mae,
             "n_features": len(feature_cols),
+            "n_rows": int(data.height),
+            "data_hash": data_hash,
             "date_min": str(data.get_column("date_heure").min()),
             "date_max": str(data.get_column("date_heure").max()),
         },

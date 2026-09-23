@@ -1,4 +1,5 @@
 .PHONY: up down build restart logs psql sync lock lint test init new_data reset \
+        train predict evaluate snapshot \
         db-meta airflow-prep-env airflow-build airflow airflow-down \
         airflow-logs airflow-shell airflow-reset mlflow mlflow-build mlflow-down mlflow-logs mlflow-champion
 ifeq (,$(wildcard .env))
@@ -39,6 +40,9 @@ lint:
 test:
 	uv run pytest -q
 
+test-v: ### Teste avec détails et temps d'exécutionuv run python -m src.models.train_model
+	uv run pytest -v --durations=10
+
 init:
 	uv run alembic upgrade head && uv run python -m src.data.load && uv run python -m src.data.build_raw && uv run python -m src.data.create_users
 
@@ -47,6 +51,19 @@ new_data:
 
 reset:
 	uv run python -m src.data.reset_last_year
+
+# --- Modèle : entraînement, prédiction, versioning (partie modèle) ---------
+train: ## Entraîne le modèle + logue le run dans MLflow (promotion champion)
+	uv run python -m src.models.train_model
+
+predict: ## Score la source configurée -> data/processed/predictions.parquet
+	uv run python -m src.models.predict_model --save
+
+evaluate: ## Évalue le modèle
+	uv run python -m src.models.evaluate
+
+snapshot: ## Fige un instantané daté du dataset (reference data)
+	uv run python -m src.data.snapshot
 
 db-meta: ## Crée les rôles et bases de métadonnées
 	docker compose up -d db

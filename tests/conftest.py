@@ -52,3 +52,7 @@ def synthetic_raw() -> pl.DataFrame:
     df = pl.concat([df, dup])
     df = df.with_row_index("_i").filter(~pl.col("_i").is_in([100, 101])).drop("_i")
     return df
+@pytest.fixture(autouse=True) ## évite que les tests tentent de se connecter à MLflow (pas de serveur en test)
+def _disable_mlflow(monkeypatch):
+    monkeypatch.delenv("MLFLOW_TRACKING_URI", raising=False)
+    monkeypatch.setattr("src.config.config.settings.mlflow_tracking_uri", "", raising=False)
