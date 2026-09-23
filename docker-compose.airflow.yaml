@@ -44,8 +44,10 @@ x-airflow-common: &airflow-common
     # Image applicative exécutée par le DockerOperator.
     TRAINER_IMAGE: ${TRAINER_IMAGE:-eco2mix-api}
     # Réseau que rejoignent les conteneurs de tâches, pour joindre db et mlflow.
+    # Doit être le réseau de la stack (mlops-net, préfixé par le nom du projet).
     # Vérifier : docker network ls | grep eco2mix
-    APP_NETWORK: ${APP_NETWORK:-eco2mix_default}
+    # MODIFIÉ : valeur par défaut eco2mix_default -> eco2mix_mlops-net
+    APP_NETWORK: ${APP_NETWORK:-eco2mix_mlops-net}
     # Chemin du projet SUR L'HÔTE, indispensable aux montages du
     # DockerOperator : le démon Docker résout les binds dans SON référentiel,
     # pas dans celui du conteneur Airflow. Renseigné par make airflow-prep-env.
@@ -79,6 +81,11 @@ x-airflow-common: &airflow-common
   depends_on:
     db:
       condition: service_healthy
+  # MODIFIÉ : même réseau que le reste de la stack (déclaré dans
+  # docker-compose.yaml). Sans lui, Airflow atterrit sur eco2mix_default
+  # et ne joint ni `db` ni `mlflow`. Hérité par les trois services.
+  networks:
+    - mlops-net
 
 services:
   airflow-init:
