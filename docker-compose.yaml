@@ -62,15 +62,23 @@ services:
       # Passé en variable plutôt qu'en argument de command : un argument de
       # ligne de commande est lisible dans un `ps` à l'intérieur du conteneur.
       MLFLOW_BACKEND_STORE_URI: postgresql+psycopg2://mlflow:${MLFLOW_DB_PASSWORD}@db:5432/mlflow
+      # Artefacts sur Silo (S3). Utilisateur applicatif limité au bucket
+      # mlflow, jamais le compte root. Seul ce conteneur connaît ces
+      # identifiants : grâce à --serve-artifacts, l'API et Airflow passent
+      # par le serveur MLflow et n'ont besoin d'aucun accès S3.
+      MLFLOW_S3_ENDPOINT_URL: http://silo:9000
+      AWS_ACCESS_KEY_ID: ${SILO_MLFLOW_ACCESS_KEY}
+      AWS_SECRET_ACCESS_KEY: ${SILO_MLFLOW_SECRET_KEY}
     command: >
       mlflow server --host 0.0.0.0 --port 5000
-        --artifacts-destination /mlartifacts --serve-artifacts
+        --artifacts-destination s3://mlflow --serve-artifacts
     ports:
       # Port interne 5000 sur le réseau Compose ; MLFLOW_PORT (5001 sur macOS,
       # où AirPlay occupe le 5000) ne concerne que l'accès navigateur.
       - "${MLFLOW_PORT:-5000}:5000"
-    volumes:
-      - mlartifacts:/mlartifacts
+    # Plus de volume : les artefacts sont dans le bucket. Le volume
+    # mlartifacts reste déclaré en bas du fichier, comme sauvegarde pour
+    # un retour arrière, jusqu'à validation complète.
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:5000/health').status==200 else 1)\""]
       interval: 10s
@@ -80,6 +88,9 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      # Garantit que le bucket et l'utilisateur existent avant le démarrage.
+      silo-init:
+        condition: service_completed_successfully
     networks:
       - mlops-net
     restart: unless-stopped

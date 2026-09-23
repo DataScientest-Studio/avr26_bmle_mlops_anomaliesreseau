@@ -118,7 +118,7 @@ airflow-reset: ## Remet à zéro les métadonnées Airflow
 mlflow-build: ## construit l'image, sans démarrer
 	docker compose build mlflow
 
-mlflow: ## Démarre MLflow seul et affiche l'URL
+mlflow: silo-check ## Démarre MLflow seul et affiche l'URL
 	docker compose up -d mlflow
 	@echo "Interface : http://localhost:$(MLFLOW_PORT)"
 
