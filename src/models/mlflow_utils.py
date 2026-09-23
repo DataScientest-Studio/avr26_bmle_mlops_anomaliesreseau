@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 import os
+import subprocess
 
 from src.config.config import settings
 
@@ -27,6 +28,23 @@ logger = logging.getLogger("mlflow")
 _THRESHOLD_KEYS = (
     "feature_cols", "target", "resid_median", "resid_scale", "k", "version", "kind",
 )
+
+
+def _git_commit() -> str:
+    """Hash court du commit ayant produit ce run (versioning code, pour l'audit).
+
+    En conteneur le dossier ``.git`` est absent → on lit d'abord la variable
+    ``GIT_COMMIT`` injectée au build (``ARG GIT_COMMIT`` dans le Dockerfile).
+    """
+    if os.environ.get("GIT_COMMIT"):
+        return os.environ["GIT_COMMIT"]
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"],
+            text=True, stderr=subprocess.DEVNULL,
+        ).strip()
+    except Exception:
+        return "unknown"
 
 
 def tracking_uri() -> str:
@@ -67,6 +85,10 @@ def log_training_run(artifact: dict, extra_params: dict | None = None) -> str | 
                     "n_features": meta["n_features"],
                     "freq": settings.freq,
                     "source": settings.source,
+                    # Versioning (audit) : code (commit) + données (empreinte).
+                    "git_commit": _git_commit(),
+                    "data_hash": meta.get("data_hash", "unknown"),
+                    "n_rows": meta.get("n_rows", 0),
                     **(extra_params or {}),
                 }
             )
