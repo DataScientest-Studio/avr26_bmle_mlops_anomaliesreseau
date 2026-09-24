@@ -1,4 +1,4 @@
-.PHONY: up down build restart logs psql sync lock lint test init new_data reset \
+.PHONY: up down build restart logs psql sync lock lint test test-v init new_data reset \
         train predict evaluate snapshot \
         db-meta airflow-prep-env airflow-build airflow airflow-down \
         airflow-logs airflow-shell airflow-reset mlflow mlflow-build mlflow-down mlflow-logs mlflow-champion
@@ -40,8 +40,7 @@ lint:
 test:
 	uv run pytest -q
 
-test-v: ### Teste avec détails et temps d'exécution
-	uv run python -m src.models.train_model
+test-v: ## Teste avec détails et temps d'exécution
 	uv run pytest -v --durations=10
 
 init:
