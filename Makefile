@@ -40,7 +40,8 @@ lint:
 test:
 	uv run pytest -q
 
-test-v: ### Teste avec détails et temps d'exécutionuv run python -m src.models.train_model
+test-v: ### Teste avec détails et temps d'exécution
+	uv run python -m src.models.train_model
 	uv run pytest -v --durations=10
 
 init:
