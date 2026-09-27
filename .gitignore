@@ -103,3 +103,6 @@ log/
 plugins/
 models_staging/
 models_staging/
+
+#streamlit
+!streamlit_app/lib/
