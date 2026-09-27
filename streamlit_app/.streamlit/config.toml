@@ -1,0 +1,14 @@
+# Lu par Streamlit quand on lance depuis streamlit_app/ (cwd). Depuis la racine
+# du repo, passer les mêmes options en ligne de commande (voir README).
+[server]
+address = "0.0.0.0"
+port = 8501
+headless = true
+runOnSave = false
+
+[browser]
+gatherUsageStats = false
+
+[theme]
+base = "light"
+primaryColor = "#0072B2"
