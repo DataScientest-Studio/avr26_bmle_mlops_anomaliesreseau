@@ -7,6 +7,8 @@ from typing import List, Optional
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from prometheus_fastapi_instrumentator import Instrumentator
+from prometheus_client import Gauge
+
 import jwt
 from jwt.exceptions import InvalidTokenError
 import mlflow.pyfunc
@@ -16,9 +18,11 @@ from pydantic import BaseModel
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
+from scipy.stats import ks_2samp
+
 from src.config.settings import settings
 from src.data.create_users import User as DBUser
-from src.models.train_model import train
+from src.models.train_model import train, load_feature_frame, select_feature_columns, TARGET
 from src.models.predict_model import score, resolve_artifact
 
 
@@ -141,19 +145,89 @@ def require_admin(current_user: User = Depends(get_current_user)) -> User:
         )
     return current_user
 
+# ==============================
+# Drift monitoring
+# ==============================
+
+DATA_DRIFT_KS_PVALUE = Gauge(
+    "model_feature_drift_ks_pvalue",
+    "P-value du test Kolmogorov-Smirnov par feature (drift si < 0.05)",
+    ["feature"],
+)
+DRIFTED_FEATURES_RATIO = Gauge(
+    "model_drifted_features_ratio",
+    "Pourcentage de features en dérive statistique",
+)
+PRED_DRIFT_MEAN = Gauge(
+    "model_prediction_mean", "Moyenne glissante des prédictions y_pred"
+)
+
+drift_state = {
+    "reference_data": None, 
+    "live_buffer": [],  
+    "buffer_limit": 5, 
+}
+
+
+def load_reference_distribution():
+    """Charge un échantillon récent via Polars"""
+
+    feats = load_feature_frame()
+    feature_cols = select_feature_columns(feats)
+    needed = feature_cols + [TARGET]
+    drift_state["reference_data"] = feats.drop_nulls(subset=needed).sort("date_heure")[-500:]
+
+def compute_data_drift():
+    """Compare la distribution du buffer live avec la référence"""
+    ref_df: pl.DataFrame = drift_state.get("reference_data")
+    buffer = drift_state.get("live_buffer")
+
+    if ref_df is None or len(buffer) < 5:
+        return
+
+    current_df = pl.DataFrame(buffer)
+
+    features = [
+        col
+        for col in current_df.columns
+        if col in ref_df.columns and col not in ["date_heure", "y_pred"]
+    ]
+
+    drifted_count = 0
+
+    for col in features:
+        ref_values = ref_df.get_column(col).drop_nulls().to_numpy()
+        cur_values = current_df.get_column(col).drop_nulls().to_numpy()
+
+        if len(cur_values) > 0 and len(ref_values) > 0:
+            stat, p_value = ks_2samp(ref_values, cur_values)
+
+            DATA_DRIFT_KS_PVALUE.labels(feature=col).set(p_value)
+
+            if p_value < 0.05:
+                drifted_count += 1
+
+    if features:
+        ratio = (drifted_count / len(features)) * 100
+        DRIFTED_FEATURES_RATIO.set(ratio)
+
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Chargement initial du champion au boot de l'API
-    load_best_model()
-    yield
-    model_state.clear()
+    try:
+        load_best_model()
+        load_reference_distribution()
+        yield
+        model_state.clear()
+        drift_state.clear()
+    except mlflow.exceptions.MlflowException:
+        print('Pas de modèle trouvé : lancer un /train en premier')
+        yield
 
 # Lancement app
 app = FastAPI(title = "API MLOps - Anomalies réseau", version = "1.0.0", lifespan = lifespan)
-
-# Lancement prometheus sur route cible
-Instrumentator().instrument(app).expose(app, endpoint="/metrics")
 
 # Classes de vérification de formatage des requêtes
 class FeatureRow(BaseModel):
@@ -259,7 +333,7 @@ def train_endpoint(background_tasks: BackgroundTasks):
 
 # 3. /predict
 @app.post("/predict", response_model=PredictResponse)
-def predict_endpoint(request: PredictRequest):
+def predict_endpoint(request: PredictRequest, background_tasks: BackgroundTasks):
     """Predicts using the model with the @champion tag"""
     artifact = model_state.get("artifact")
     if artifact is None or artifact.get("model") is None:
@@ -268,8 +342,16 @@ def predict_endpoint(request: PredictRequest):
             detail="Model did not load properly",
         )
     try:
-        input_data = pl.DataFrame([row.model_dump() for row in request.features])
+        raw_rows = [row.model_dump() for row in request.features]
+        input_data = pl.DataFrame(raw_rows)
         preds = score(feats=input_data, artifact=artifact) 
+        mean_pred = float(preds.get_column("y_pred").mean())
+        PRED_DRIFT_MEAN.set(mean_pred)
+        drift_state["live_buffer"].extend(raw_rows)
+        if len(drift_state["live_buffer"]) >= drift_state["buffer_limit"]:
+            background_tasks.add_task(compute_data_drift)
+            # On conserve une fenêtre glissante (les 5 dernières requêtes)
+            drift_state["live_buffer"] = drift_state["live_buffer"][-5:]
         return {"predictions": preds.to_dicts()}
 
     except Exception as e:
@@ -284,3 +366,7 @@ def reload_model():
     load_best_model()
     new_best_model = model_state
     return {"old_model": f"{MODEL_NAME}"+":"+f"{previous_best_model['version']}", "new_model": f"{MODEL_NAME}"+":"+f"{new_best_model['version']}"}
+
+
+# Lancement prometheus sur route cible
+Instrumentator().instrument(app).expose(app, endpoint="/metrics")
