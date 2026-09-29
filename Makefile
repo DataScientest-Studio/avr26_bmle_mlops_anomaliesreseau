@@ -54,7 +54,7 @@ reset:
 
 # --- Modèle : entraînement, prédiction, versioning (partie modèle) ---------
 train: ## Entraîne le modèle + logue le run dans MLflow (promotion champion)
-	uv run python -m src.models.train_model
+	MLFLOW_TRACKING_URI=http://localhost:$${MLFLOW_PORT:-5000} uv run python -m src.models.train_model
 
 predict: ## Score la source configurée -> data/processed/predictions.parquet
 	uv run python -m src.models.predict_model --save
@@ -164,3 +164,8 @@ silo-update: silo-check ## Met à jour Silo vers le dernier patch et rescanne l'
 
 silo-logs: ## Suit les logs de Silo
 	docker compose logs -f silo
+
+silo-perms: ## Donne le volume Silo à l'UID 1000 (à lancer une fois après le passage en non-root)
+	docker compose stop silo
+	docker run --rm -v eco2mix_silodata:/data alpine chown -R 1000:1000 /data
+	docker compose up -d silo silo-init mlflow

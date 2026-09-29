@@ -7,3 +7,8 @@ FROM ghcr.io/mlflow/mlflow:v3.1.0
 RUN pip install --no-cache-dir \
       "psycopg2-binary>=2.9" \
       "boto3>=1.34"
+
+# Utilisateur dédié : le serveur n'a rien à écrire en local
+# (backend PostgreSQL, artefacts sur Silo via --serve-artifacts).
+RUN useradd -m -u 1000 mlflow
+USER mlflow

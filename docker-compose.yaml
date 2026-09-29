@@ -102,10 +102,12 @@ services:
   # Compose ne retélécharge jamais une image déjà présente.
   silo:
     image: pgsty/silo:latest
+    user: "1000:1000"
     command: ["server", "/data", "--console-address", ":9001"]
     # Variables explicites plutôt que env_file : Silo ne reçoit que ses
     # propres identifiants, pas les secrets Postgres ou Airflow.
     environment:
+      HOME: /tmp
       MINIO_ROOT_USER: ${SILO_ROOT_USER}
       MINIO_ROOT_PASSWORD: ${SILO_ROOT_PASSWORD}
     healthcheck:
@@ -128,12 +130,14 @@ services:
   # applicatif, puis s'arrête. Idempotent, relancé à chaque `up`.
   silo-init:
     image: pgsty/silo:latest
+    user: "1000:1000"
     entrypoint: ["sh", "/init/init.sh"]
     environment:
       MINIO_ROOT_USER: ${SILO_ROOT_USER}
       MINIO_ROOT_PASSWORD: ${SILO_ROOT_PASSWORD}
       SILO_MLFLOW_ACCESS_KEY: ${SILO_MLFLOW_ACCESS_KEY}
       SILO_MLFLOW_SECRET_KEY: ${SILO_MLFLOW_SECRET_KEY}
+      HOME: /tmp
     volumes:
       - ./docker/silo:/init:ro
     depends_on:
