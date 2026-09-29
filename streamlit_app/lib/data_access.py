@@ -16,10 +16,15 @@ Source des données, variable ``ANOM_APP_SOURCE`` :
 
 from __future__ import annotations
 
+import json
 import os
+import re
+import socket
 import sys
 import time
+import urllib.parse
 import urllib.request
+from contextlib import suppress
 from datetime import datetime, timedelta
 from datetime import time as dtime
 from pathlib import Path
@@ -28,6 +33,7 @@ from zoneinfo import ZoneInfo
 
 import polars as pl
 import streamlit as st
+from dotenv import load_dotenv
 
 # --- Racine du repo dans sys.path (streamlit_app/lib/data_access.py -> parents[2])
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -50,17 +56,21 @@ def _load_dotenv() -> None:
     pydantic-settings lit ``.env`` relativement au dossier courant : on le
     pré-charge pour que l'app marche qu'on la lance depuis la racine ou depuis
     ``streamlit_app/``.
+
+    On délègue le parsing à ``python-dotenv`` — la bibliothèque que
+    pydantic-settings utilise elle-même pour ``.env`` — sinon les deux lectures
+    divergent. Un parseur artisanal ignorait les commentaires en fin de ligne :
+    ``POSTGRES_HOST=localhost   # depuis l'hôte`` devenait un nom d'hôte de
+    quarante caractères, et le DSN produit était rejeté par psycopg. Comme
+    ``os.environ`` prime sur le fichier ``.env``, c'est cette valeur empoisonnée
+    qui l'emportait et ``src.config.settings`` ne la voyait jamais.
     """
     env = REPO_ROOT / ".env"
     if not env.is_file():
         return
-    for line in env.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, _, val = line.partition("=")
-        key = key.strip().removeprefix("export ").strip()
-        os.environ.setdefault(key, val.strip().strip('"').strip("'"))
+    # .env illisible : les pages dégraderont plus bas, mieux vaut ne pas planter ici.
+    with suppress(Exception):
+        load_dotenv(env, override=False)
 
 
 _load_dotenv()
@@ -114,19 +124,76 @@ def get_settings() -> Result:
         return None, _msg("Configuration src.config.config illisible", exc)
 
 
+# Noms d'hôte du réseau Docker Compose : port à l'intérieur du conteneur, et nom
+# de la variable d'environnement qui porte le port publié sur l'hôte.
+_DOCKER_SERVICE_PORTS = {
+    "mlflow": ("5000", "MLFLOW_PORT"),
+    "api": ("8000", "API_PORT"),
+    "prometheus": ("9090", "PROMETHEUS_PORT"),
+    "grafana": ("3000", "GRAFANA_PORT"),
+    "airflow": ("8080", "AIRFLOW_PORT"),
+}
+
+
+def _in_container() -> bool:
+    """Vrai si ce process tourne dans un conteneur."""
+    return Path("/.dockerenv").exists()
+
+
+def _host_reachable(host: str) -> bool:
+    try:
+        socket.getaddrinfo(host, None)
+    except OSError:
+        return False
+    return True
+
+
+def to_host_url(url: str) -> str:
+    """Réécrit un nom de service Docker en ``localhost`` quand on tourne sur l'hôte.
+
+    ``.env`` porte l'URI que les *conteneurs* utilisent (``http://mlflow:5000``),
+    alors que l'app Streamlit tourne sur la machine de l'hôte, où ce nom ne
+    résout pas. Sans cette réécriture, les pages MLflow affichent « serveur
+    injoignable » alors qu'il tourne. La résolution DNS décide : si le nom
+    résout (réseau Compose), on n'y touche pas.
+    """
+    if _in_container():
+        return url
+    m = re.match(r"^(?P<scheme>https?://)(?P<host>[^/:]+)(?P<rest>[:/].*)?$", url.strip())
+    if not m:
+        return url
+    host, rest = m["host"], m["rest"] or ""
+    if host == "localhost" or _host_reachable(host):
+        return url
+    entry = _DOCKER_SERVICE_PORTS.get(host)
+    if entry is None:
+        return url
+    internal_port, env_var = entry
+    # Le port interne du conteneur et celui publié sur l'hôte diffèrent
+    # (MLFLOW_PORT…). On remplace le port d'origine par le port publié.
+    port = re.match(r"^:(\d+)(?P<tail>.*)$", rest)
+    tail = port["tail"] if port else rest
+    return f"{m['scheme']}localhost:{os.environ.get(env_var, internal_port)}{tail}"
+
+
 def mlflow_uri() -> str:
-    """URI MLflow : ``MLFLOW_TRACKING_URI`` sinon config projet sinon localhost."""
+    """URI MLflow utilisable depuis l'hôte : ``MLFLOW_TRACKING_URI``, config, défaut.
+
+    L'URI de ``.env`` vise le réseau Docker ; on la réécrit donc en ``localhost``
+    quand elle n'est pas résolvable d'ici (voir :func:`to_host_url`).
+    """
     uri = os.environ.get("MLFLOW_TRACKING_URI", "").strip()
-    if uri:
-        return uri
-    settings, _ = get_settings()
-    default = f"http://localhost:{os.environ.get('MLFLOW_PORT', '5000')}"
-    return (getattr(settings, "mlflow_tracking_uri", "") or default).strip()
+    if not uri:
+        settings, _ = get_settings()
+        uri = (getattr(settings, "mlflow_tracking_uri", "") or "").strip()
+    if not uri:
+        uri = f"http://localhost:{os.environ.get('MLFLOW_PORT', '5000')}"
+    return to_host_url(uri)
 
 
 def mlflow_ui_url() -> str:
     """URL de l'UI MLflow pour le navigateur (surcharge : ``MLFLOW_UI_URL``)."""
-    return os.environ.get("MLFLOW_UI_URL", mlflow_uri())
+    return to_host_url(os.environ.get("MLFLOW_UI_URL", "").strip() or mlflow_uri())
 
 
 def _http_ok(url: str, timeout: float = 2.0) -> tuple[bool, str]:
@@ -140,6 +207,7 @@ def _http_ok(url: str, timeout: float = 2.0) -> tuple[bool, str]:
 def _db_ok() -> tuple[bool, str]:
     try:
         import psycopg
+
         from src.config.settings import settings as db_settings
 
         with psycopg.connect(db_settings.dsn, connect_timeout=2) as conn:
@@ -157,7 +225,7 @@ def service_urls() -> dict[str, str]:
     airflow ${AIRFLOW_PORT:-8080}, prometheus 9090, grafana 3000.
     """
     env = os.environ.get
-    return {
+    urls = {
         "api": env("ANOM_API_URL", API_URL),
         "mlflow": mlflow_ui_url(),
         "silo": env("ANOM_SILO_URL", "http://localhost:9001"),
@@ -165,6 +233,8 @@ def service_urls() -> dict[str, str]:
         "prometheus": env("ANOM_PROMETHEUS_URL", "http://localhost:9090"),
         "grafana": env("ANOM_GRAFANA_URL", "http://localhost:3000"),
     }
+    # Une URL de service peut venir de .env avec un nom de réseau Docker.
+    return {name: to_host_url(url) for name, url in urls.items()}
 
 
 # (nom, rôle, chemin de santé) — sondes HTTP informatives.
@@ -197,6 +267,100 @@ def get_services_status() -> list[dict]:
         rows.append({"service": name, "role": role, "ok": ok, "detail": detail,
                      "essentiel": False})
     return rows
+
+
+# =============================================================================
+# Contrat de l'API FastAPI (lu dans /openapi.json)
+# =============================================================================
+_METHODS = ("get", "post", "put", "patch", "delete", "head", "options")
+
+
+@st.cache_data(ttl=15, show_spinner=False)
+def _openapi_cached(url: str) -> list[dict]:
+    with urllib.request.urlopen(f"{url.rstrip('/')}/openapi.json", timeout=3) as resp:  # noqa: S310
+        spec = json.loads(resp.read().decode("utf-8"))
+    rows = []
+    for path, ops in spec.get("paths", {}).items():
+        for method, op in ops.items():
+            if method.lower() not in _METHODS or not isinstance(op, dict):
+                continue
+            rows.append({
+                "method": method.upper(),
+                "path": path,
+                "summary": op.get("summary") or op.get("operationId") or "—",
+                "secured": bool(op.get("security")),
+            })
+    order = {m: i for i, m in enumerate(m for m in _METHODS)}
+    rows.sort(key=lambda r: (r["path"], order.get(r["method"].lower(), 99)))
+    return rows
+
+
+def get_api_routes() -> Result:
+    """Routes réellement exposées par l'API : ``(liste, None)`` ou ``(None, msg)``.
+
+    Le plan de la page doit correspondre à ce que l'API sert *vraiment* : la
+    lecture de ``/openapi.json`` évite qu'une route soit annoncée et disparaisse.
+    """
+    url = service_urls()["api"]
+    try:
+        rows = _openapi_cached(url)
+    except Exception as exc:
+        return None, _msg(f"Contrat de l'API '{url}/openapi.json' illisible", exc)
+    if not rows:
+        return None, "L'API ne déclare aucune route."
+    return rows, None
+
+
+# =============================================================================
+# Prometheus (requête instantanée sur /api/v1/query)
+# =============================================================================
+@st.cache_data(ttl=15, show_spinner=False)
+def _prom_cached(url: str, expr: str) -> list[dict]:
+    q = urllib.parse.urlencode({"query": expr})  # noqa: S310
+    with urllib.request.urlopen(f"{url.rstrip('/')}/api/v1/query?{q}", timeout=3) as resp:  # noqa: S310
+        payload = json.loads(resp.read().decode("utf-8"))
+    if payload.get("status") != "success":
+        raise RuntimeError(payload.get("error", "réponse Prometheus inattendue"))
+    out = []
+    for s in payload.get("data", {}).get("result", []):
+        ts, val = s.get("value", [None, None])
+        out.append({"labels": {k: v for k, v in (s.get("metric") or {}).items()
+                               if not k.startswith("__")},
+                    "ts": ts, "value": float(val) if val is not None else None})
+    return out
+
+
+def get_prom_query(expr: str) -> Result:
+    """Instant vectorielle pour une expression PromQL.
+
+    Vérifie d'abord que la cible est *scrapee* (``up == 1``) : sans cela une
+    expression qui ne retourne rien est ambiguë — soit Prometheus est éteint,
+    soit la métrique n'a jamais été produite.
+    """
+    url = service_urls()["prometheus"]
+    try:
+        up = _prom_cached(url, "up")
+    except Exception as exc:
+        return None, _msg(f"Prometheus '{url}' injoignable", exc)
+    if not up or not up[0]["value"]:
+        return None, f"Prometheus '{url}' ne renvoie aucune cible."
+    if up[0]["value"] == 0:
+        job = up[0]["labels"].get("job", "?")
+        return None, (f"Prometheus ne scrape pas la cible `{job}` "
+                      f"(API injoignable ou `/metrics` en erreur).")
+    try:
+        rows = _prom_cached(url, expr)
+    except Exception as exc:
+        return None, _msg(f"Requête PromQL impossible ({expr})", exc)
+    return rows, None
+
+
+def get_prom_scalar(expr: str) -> Result:
+    """Raccourci : première valeur d'une expression, ou ``(None, msg)``."""
+    rows, err = get_prom_query(expr)
+    if err:
+        return None, err
+    return (rows[0]["value"] if rows else None), None
 
 
 # =============================================================================
