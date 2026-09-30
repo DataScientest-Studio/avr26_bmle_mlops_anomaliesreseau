@@ -1,4 +1,3 @@
-
 """Next steps — corrections, améliorations, techno, Kubernetes, CI/CD, sécurité."""
 
 from __future__ import annotations
@@ -33,8 +32,8 @@ with c2:
 with c3:
     st.markdown(
         "🟠 **Ré-entraîner sur dérive, pas sur horaire**  \n"
-        "Métriques métier dans Prometheus + détection de dérive "
-        "pour déclencher le DAG quand c'est utile."
+        "La dérive est déjà mesurée par l'API (test KS → Prometheus) ; "
+        "reste à déclencher le DAG sur ce signal plutôt que chaque jour à 4 h."
     )
 
 st.caption("Priorité : 🔴 avant toute mise en production · 🟠 prochaine itération · 🟢 plus tard.")
@@ -54,6 +53,8 @@ with tabs[0]:
 | Ne plus exposer la configuration Airflow | `EXPOSE_CONFIG=true` : mot de passe de la base et clé Fernet lisibles dans l'UI | 🔴 |
 | Injecter le commit dans l'image | pas d'`ARG GIT_COMMIT` dans le Dockerfile → runs Airflow avec `git_commit=unknown` | 🟠 |
 | Un seul nom de modèle | `MODEL_NAME` / `MODEL_ALIAS` redéclarés dans l'API au lieu de lire `settings` | 🟠 |
+| Sortir l'état du DAG de Git | `max_year.conf` modifié à chaque exécution, donc toujours « modifié » dans Git | 🟢 |
+| Fins de ligne homogènes | fichiers en CRLF ; `.gitattributes` avec `eol=lf` pour toute l'équipe | 🟢 |
 | Nettoyer le README | reste du template « movie_recommandation » | 🟢 |
 """
     )
@@ -63,8 +64,8 @@ with tabs[1]:
         """
 | Action | Pourquoi | Priorité |
 |---|---|---|
-| Métriques **métier** exposées à Prometheus | taux d'anomalies, version servie, MAE glissante, pas seulement la latence HTTP | 🟠 |
-| **Détection de dérive** (ex. Evidently) | savoir *quand* ré-entraîner plutôt que tous les jours à 4 h | 🟠 |
+| Compléter les métriques **métier** dans Prometheus | dérive et prédiction moyenne déjà exposées ; manquent taux d'anomalies, version servie, MAE glissante | 🟠 |
+| **Déclencher le DAG sur dérive** | la dérive est déjà mesurée (KS, exposée à Prometheus) : ré-entraîner sur alerte plutôt qu'à heure fixe | 🟠 |
 | Validation des données à l'ingestion | schéma + bornes (ex. pandera sur polars) avant `build_raw` | 🟠 |
 | **Sauvegardes PostgreSQL** planifiées | `pg_dump` orchestré par Airflow, restauration testée | 🟠 |
 | Procédure de **rollback** documentée | remettre `@champion` sur la version précédente : une commande, à écrire noir sur blanc | 🟠 |

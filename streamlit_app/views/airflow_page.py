@@ -1,4 +1,4 @@
-"""Airflow — partie coéquipier (cadre à compléter)."""
+"""Airflow — orchestration du ré-entraînement."""
 
 from __future__ import annotations
 
@@ -9,12 +9,11 @@ import streamlit as st
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from lib import data_access as da  # noqa: E402,F401  (seul point d'accès données)
+from lib import data_access as da  # noqa: E402  (seul point d'accès données)
 from lib import plan, theme  # noqa: E402
 
 m = plan.meta("airflow")
 theme.header("Airflow", m["minutes"], m["owner"])
-#theme.stub("responsable de l'orchestration", ['DAG `retrain_eco2mix`, quotidien 4 h : `ingest → build_raw → train → reload_api`', "**DockerOperator** : chaque tâche tourne dans l'image applicative (pas de dépendances ML dans Airflow)", "Pas de tâche de promotion : c'est MLflow (`_promote_if_better`) qui décide → une seule source de vérité", 'Curseur `max_year.conf` : une année de plus à chaque exécution (arrivée de données simulée)', "Fichier compose séparé + profil `airflow` (n'impacte pas `make up`)", '`max_active_runs=1`, 2 retries, timeouts par tâche'])
 
 theme.story(
     "**Ré-entraîner automatiquement** le modèle à mesure que les données arrivent, "
@@ -27,9 +26,7 @@ theme.story(
     "exécution pour simuler l'arrivée de nouvelles données.",
 )
 
-#st.divider()
-
-with st.expander("Pourquoi ces choix d'infrastructure ?", expanded=True):
+with st.expander("Pourquoi ces choix d'infrastructure ?", expanded=False):
     st.markdown(
         """
 | Choix | Pourquoi |
@@ -47,11 +44,92 @@ with st.expander("Pourquoi ces choix d'infrastructure ?", expanded=True):
 """
     )
 
-st.caption(
-    "DAG `retrain_eco2mix` · planification quotidienne 4 h · "
-    "Démarrer : `make airflow`"
+# -----------------------------------------------------------------------------
+st.subheader("Le DAG retrain_eco2mix")
+st.graphviz_chart(
+    f"""
+digraph {{
+  rankdir=LR; bgcolor="transparent";
+  node [shape=box, style="rounded,filled", fontname="Helvetica", fontsize=12,
+        fillcolor="{theme.MINE_FILL}", color="{theme.REEL}"];
+  edge [color="{theme.NEUTRE}"];
+  ingest -> build_raw -> train -> reload_api;
+  node [fillcolor="{theme.TEAM_FILL}", color="{theme.NEUTRE}", style="rounded,filled,dashed"];
+  mlflow [label="MLflow\\n@champion"];
+  api [label="API FastAPI"];
+  train -> mlflow [style=dashed, label=" run + _promote_if_better", fontsize=10];
+  reload_api -> api [style=dashed, label=" POST /reload", fontsize=10];
+}}
+""",
+    width="stretch",
+)
+st.markdown(
+    """
+| Tâche | Ce qu'elle fait |
+|---|---|
+| `ingest` | charge les données ODRÉ jusqu'à l'année du curseur, dans `staging` |
+| `build_raw` | type les données (`staging` → `raw`) |
+| `train` | entraîne, logue le run dans MLflow ; `_promote_if_better` déplace `@champion` si la MAE s'améliore |
+| `reload_api` | `POST /token` puis `POST /reload` : l'API charge le champion, sans redémarrer (voir page API) |
+"""
 )
 
-# theme.speaker_notes("airflow")
-st.link_button("Ouvrir Airflow ↗", da.service_urls()["airflow"])
+# -----------------------------------------------------------------------------
+st.subheader("En ce moment")
+k1, k2 = st.columns([1, 3])
+year, y_err = da.get_max_year()
+k1.metric("Curseur `max_year`", year if y_err is None else "—",
+          help="Dernière année « arrivée ». Le prochain run en ajoutera une.")
+runs, r_err = da.get_airflow_runs(limit=5)
+if r_err:
+    k2.warning(r_err)
+else:
+    icons = {"success": "✅ succès", "failed": "❌ échec", "running": "⏳ en cours",
+             "queued": "⏸ en file"}
+    k2.dataframe(
+        [{"état": icons.get(r["state"], r["state"]),
+          "déclenchement": "planifié" if r["run_type"] == "scheduled" else "manuel",
+          "début": r["start"],
+          "durée": f"{r['duration_s'] // 60} min {r['duration_s'] % 60:02d} s"
+                   if r["duration_s"] is not None else "—"} for r in runs],
+        width="stretch", hide_index=True,
+    )
+    k2.caption("Lu en direct dans l'API REST d'Airflow : les 5 derniers runs du DAG.")
+
+# -----------------------------------------------------------------------------
+st.subheader("Une tâche = un conteneur")
+d1, d2 = st.columns([3, 2])
+d1.markdown(
+    """
+Les tâches ne tournent pas **dans** Airflow : chacune lance un conteneur de l'image
+applicative, sur le réseau de la stack. Airflow reste léger et n'installe aucune
+bibliothèque ML : pas de conflit de versions, et le code exécuté est exactement
+celui de l'API et du développement.
+
+**Contrepartie assumée** : pour lancer ces conteneurs, Airflow accède au socket
+Docker de l'hôte, ce qui équivaut à des droits root. C'est la première ligne des
+Next steps (KubernetesPodOperator, ou proxy de socket filtré en attendant).
+"""
+)
+d2.markdown(
+    """
+```python
+# principe d'une tâche (simplifié)
+DockerOperator(
+    task_id="train",
+    image=os.environ["TRAINER_IMAGE"],
+    command="python -m src.models.train_model",
+    network_mode=os.environ["APP_NETWORK"],
+    retries=2,
+)
+```
+"""
+)
+
+theme.conclusion(
+    "Airflow **orchestre, il ne décide pas** : il enchaîne les étapes et relance ce qui échoue, "
+    "mais la promotion reste dans le code, et l'API ne change de modèle que sur ordre du registre."
+)
+
+st.link_button("Ouvrir Airflow ↗", da.service_urls()["airflow"], width="stretch")
 theme.speaker_notes("airflow")

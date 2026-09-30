@@ -16,12 +16,14 @@ Source des données, variable ``ANOM_APP_SOURCE`` :
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import re
 import socket
 import sys
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from contextlib import suppress
@@ -709,3 +711,140 @@ def get_names() -> dict:
 def clear_caches() -> None:
     st.cache_data.clear()
     st.cache_resource.clear()
+
+
+# =============================================================================
+# Base de données : volumétrie par couche, cloisonnement, snapshots
+# =============================================================================
+DB_LAYERS = ("staging", "raw", "clean")
+
+
+@st.cache_data(ttl=30, show_spinner=False)
+def _db_overview_cached() -> dict:
+    import psycopg
+
+    from src.config.settings import settings as db_settings
+
+    # autocommit : une requête en échec (alembic_version absente) n'annule pas les autres.
+    with psycopg.connect(db_settings.dsn, connect_timeout=3, autocommit=True) as conn:
+        tables = conn.execute(
+            """
+            SELECT schemaname, relname, n_live_tup, pg_total_relation_size(relid)
+            FROM pg_stat_user_tables
+            WHERE schemaname = ANY(%s)
+            ORDER BY schemaname, relname
+            """,
+            (list(DB_LAYERS),),
+        ).fetchall()
+        databases = conn.execute(
+            """
+            SELECT datname, pg_get_userbyid(datdba)
+            FROM pg_database
+            WHERE NOT datistemplate AND datname <> 'postgres'
+            ORDER BY datname
+            """
+        ).fetchall()
+        alembic = None
+        with suppress(Exception):
+            alembic = conn.execute("SELECT version_num FROM alembic_version").fetchone()[0]
+    return {
+        "tables": [{"couche": s, "table": t, "lignes": int(n), "taille_mo": round(b / 1e6, 1)}
+                   for s, t, n, b in tables],
+        "databases": [{"base": d, "propriétaire": o} for d, o in databases],
+        "alembic": alembic,
+    }
+
+
+def get_db_overview() -> Result:
+    """Volumétrie par couche (statistiques PostgreSQL), bases et propriétaires, révision Alembic."""
+    try:
+        return _db_overview_cached(), None
+    except Exception as exc:
+        return None, _msg("Base PostgreSQL injoignable", exc)
+
+
+def get_snapshots() -> Result:
+    """Snapshots parquet figés par ``make snapshot`` (dossier : ``ANOM_SNAPSHOT_DIR``)."""
+    folder = Path(os.environ.get("ANOM_SNAPSHOT_DIR", REPO_ROOT / "data" / "snapshots"))
+    if not folder.is_absolute():
+        folder = REPO_ROOT / folder
+    files = sorted(folder.glob("**/*.parquet"), key=lambda f: f.stat().st_mtime, reverse=True)
+    if not files:
+        shown = folder.relative_to(REPO_ROOT) if folder.is_relative_to(REPO_ROOT) else folder
+        return None, f"Aucun snapshot dans `{shown}` — lancer `make snapshot`."
+    rows = []
+    for f in files[:10]:
+        n = None
+        with suppress(Exception):
+            n = pl.scan_parquet(f).select(pl.len()).collect().item()
+        rows.append({
+            "snapshot": f.name,
+            "créé le": datetime.fromtimestamp(f.stat().st_mtime).strftime("%Y-%m-%d %H:%M"),
+            "lignes": n,
+            "taille (Mo)": round(f.stat().st_size / 1e6, 1),
+        })
+    return rows, None
+
+
+# =============================================================================
+# Airflow : derniers runs du DAG (API REST) + curseur d'arrivée des données
+# =============================================================================
+AIRFLOW_DAG_ID = os.environ.get("ANOM_AIRFLOW_DAG", "retrain_eco2mix")
+_PARIS = ZoneInfo("Europe/Paris")
+
+
+def _fmt_ts(value: str | None) -> str | None:
+    if not value:
+        return None
+    return datetime.fromisoformat(value).astimezone(_PARIS).strftime("%Y-%m-%d %H:%M")
+
+
+@st.cache_data(ttl=15, show_spinner=False)
+def _airflow_runs_cached(url: str, dag_id: str, limit: int) -> list[dict]:
+    # Identifiants lus ici plutôt que passés en argument : ils n'entrent pas dans la clé de cache.
+    user = os.environ.get("AIRFLOW_ADMIN_USER", "admin")
+    pwd = os.environ.get("AIRFLOW_ADMIN_PASSWORD", "admin")
+    q = urllib.parse.urlencode({"order_by": "-execution_date", "limit": limit})
+    req = urllib.request.Request(f"{url.rstrip('/')}/api/v1/dags/{dag_id}/dagRuns?{q}")  # noqa: S310
+    req.add_header("Authorization", "Basic " + base64.b64encode(f"{user}:{pwd}".encode()).decode())
+    with urllib.request.urlopen(req, timeout=3) as resp:  # noqa: S310
+        payload = json.loads(resp.read().decode("utf-8"))
+    rows = []
+    for r in payload.get("dag_runs", []):
+        start, end = r.get("start_date"), r.get("end_date")
+        duration = None
+        if start and end:
+            duration = round((datetime.fromisoformat(end)
+                              - datetime.fromisoformat(start)).total_seconds())
+        rows.append({"state": r.get("state"), "run_type": r.get("run_type"),
+                     "start": _fmt_ts(start), "duration_s": duration})
+    return rows
+
+
+def get_airflow_runs(limit: int = 5) -> Result:
+    """Derniers runs du DAG : ``(liste, None)`` ou ``(None, msg)``."""
+    url = service_urls()["airflow"]
+    try:
+        rows = _airflow_runs_cached(url, AIRFLOW_DAG_ID, limit)
+    except urllib.error.HTTPError as exc:
+        if exc.code in (401, 403):
+            return None, ("Airflow refuse l'authentification : activer `basic_auth` "
+                          "(AIRFLOW__API__AUTH_BACKENDS) et renseigner AIRFLOW_ADMIN_USER / "
+                          "AIRFLOW_ADMIN_PASSWORD dans `.env`.")
+        if exc.code == 404:
+            return None, f"DAG `{AIRFLOW_DAG_ID}` introuvable dans Airflow."
+        return None, _msg(f"API Airflow '{url}' en erreur", exc)
+    except Exception as exc:
+        return None, _msg(f"Airflow '{url}' injoignable", exc)
+    if not rows:
+        return None, f"Aucun run pour `{AIRFLOW_DAG_ID}` — le DAG est peut-être encore en pause."
+    return rows, None
+
+
+def get_max_year() -> Result:
+    """Valeur du curseur ``src/data/max_year.conf`` (dernière année « arrivée »)."""
+    path = REPO_ROOT / "src" / "data" / "max_year.conf"
+    try:
+        return path.read_text(encoding="utf-8").strip(), None
+    except Exception as exc:
+        return None, _msg("Curseur max_year.conf illisible", exc)
