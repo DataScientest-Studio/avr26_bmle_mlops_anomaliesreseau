@@ -59,6 +59,13 @@ x-airflow-common: &airflow-common
     # l'accès navigateur.
     MLFLOW_TRACKING_URI: ${MLFLOW_TRACKING_URI:-http://mlflow:5000}
 
+    # API REST d'Airflow : accepte l'authentification HTTP Basic en plus de la
+    # session du navigateur (seule autorisée par défaut en 2.10). Utilisée par
+    # l'app Streamlit pour afficher les derniers runs du DAG.
+    # Identifiants : AIRFLOW_ADMIN_USER / AIRFLOW_ADMIN_PASSWORD.
+    # En production : réserver cet accès à un compte en lecture seule, derrière TLS.
+    AIRFLOW__API__AUTH_BACKENDS: "airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session"
+
   volumes:
     - ./dags:/opt/airflow/dags
     - ./logs/airflow:/opt/airflow/logs
