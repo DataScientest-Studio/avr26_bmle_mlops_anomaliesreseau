@@ -135,4 +135,81 @@ with st.expander("Top anomalies de l'historique"):
         st.info(terr)
     elif top.height:
         st.dataframe(top.to_pandas(), width="stretch", hide_index=True)
+
+# -----------------------------------------------------------------------------
+st.subheader("Appeler l'API pour de vrai")
+st.markdown(
+    """
+Tout ce qui précède a été calculé **dans cette application**, avec l'artefact
+chargé localement. Le bouton ci-dessous fait autre chose : il envoie un `POST
+/predict` à l'API, qui applique **son** champion en mémoire et répond.
+
+Le résultat peut différer des courbes ci-dessus, et c'est intéressant : les
+deux côtés peuvent servir deux modèles différents. Un écart entre la courbe et
+la réponse de l'API est donc une information, pas une erreur.
+"""
+)
+
+fields, ferr = da.get_predict_fields()
+if ferr:
+    st.info(ferr)
+    st.caption("Sans le schéma `FeatureRow` lu dans `/openapi.json`, on ne sait pas "
+               "quelles colonnes envoyer. L'API est-elle démarrée ? (`make up`)")
+else:
+    n_send = st.slider("Nombre de lignes à envoyer", 1, 20, 5,
+                       help="5 lignes suffisent à remplir le buffer de dérive de l'API : "
+                            "en dessous, `/predict` ne calcule aucune p-value.")
+    btn, note = st.columns([1, 3])
+    if btn.button("POST /predict", type="primary", width="stretch"):
+        st.session_state["predict_rows"] = n_send
+    note.caption(f"Payload : `{{\"features\": [ … {n_send} ligne(s) × {len(fields)} "
+                 f"colonnes … ]}}` — contrat lu dans `/openapi.json`.")
+
+    n_rows = st.session_state.get("predict_rows")
+    if n_rows:
+        feats, gerr = da.get_features()
+        if gerr:
+            st.info(gerr)
+        else:
+            missing = [c for c in fields if c not in feats.columns]
+            if missing:
+                st.error(f"La table de features ne contient pas {len(missing)} colonne(s) "
+                         f"attendues par l'API, dont : {', '.join(missing[:5])}…")
+            else:
+                # pydantic refuse un null sur un float : on n'envoie que des
+                # lignes complètes, les plus récentes.
+                send = (feats.sort("date_heure", descending=True)
+                        .select(fields).drop_nulls().head(n_rows))
+                with st.spinner(f"Envoi de {send.height} ligne(s) à /predict…"):
+                    preds, perr = da.post_predict(send)
+                st.session_state["predict_result"] = (preds, perr, send.height)
+
+    preds, perr, n_env = st.session_state.get("predict_result", (None, None, 0))
+    if perr:
+        st.error(perr)
+    elif preds is not None:
+        st.success(f"**HTTP 200** — {preds.height} prédiction(s) sur {n_env} ligne(s) "
+                   f"envoyées, en quelques dizaines de millisecondes.")
+        c1, c2 = st.columns([3, 2])
+        with c1:
+            st.dataframe(
+                preds.to_pandas(), width="stretch", hide_index=True,
+                column_config={
+                    "date_heure": st.column_config.DatetimeColumn(format="DD/MM/YYYY HH:mm"),
+                    "y_pred": st.column_config.NumberColumn("ŷ (MW)", format="%.0f"),
+                    "model_version": st.column_config.TextColumn("version servie"),
+                },
+            )
+        with c2:
+            versions = sorted({str(v) for v in preds["model_version"].to_list()})
+            st.metric("Lignes prédites", preds.height)
+            st.metric("Version servie par l'API", ", ".join(versions))
+            moy = float(preds["y_pred"].mean())
+            st.metric("Prédiction moyenne", f"{moy:,.0f} MW".replace(",", " "))
+            st.caption("Le `model_version` renvoyé par l'API est la version qu'elle sert "
+                       "réellement. S'il diffère de celui affiché en haut de page, "
+                       "l'application et l'API ne servent pas le même modèle — "
+                       "un `POST /reload` sur l'API remet les deux d'accord.")
+        st.caption(f"Réponse brute : `{{\"predictions\": [ … {preds.height} objet(s) … ]}}` "
+                   "— chaque objet porte `date_heure`, `y_pred` et `model_version`.")
 theme.speaker_notes("demo")

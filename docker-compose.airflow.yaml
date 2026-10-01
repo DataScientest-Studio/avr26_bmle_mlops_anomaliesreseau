@@ -76,6 +76,10 @@ x-airflow-common: &airflow-common
     # la cible reste /var/run/docker.sock, donc le code des DAGs ne change pas.
     # Renseigné par `make airflow-prep-env`.
     - ${DOCKER_SOCK:-/var/run/docker.sock}:/var/run/docker.sock
+  # uid de l'hôte (AIRFLOW_UID) pour que les fichiers écrits dans dags/ logs/
+  # models/ appartiennent à l'utilisateur de la machine. L'image ne connaît que
+  # `airflow` (50000) : entrypoint.sh déclare cet uid dans /etc/passwd avant de
+  # lancer Airflow, sans quoi getuser() échoue et le conteneur crash-loope.
   user: "${AIRFLOW_UID:-50000}:0"
   # GID du groupe propriétaire du socket, vu DEPUIS LE CONTENEUR.
   # macOS (OrbStack, Docker Desktop) : 0, le socket appartient à root dans la VM.
@@ -98,7 +102,10 @@ services:
   airflow-init:
     <<: *airflow-common
     container_name: eco2mix_airflow_init
-    entrypoint: /bin/bash
+    # ENTRYPOINT de l'image = entrypoint.sh, qui déclare AIRFLOW_UID dans
+    # /etc/passwd. On le conserve explicitement (sinon un `entrypoint: /bin/bash`
+    # court-circuiterait la correction) et on lui passe -c pour le script.
+    entrypoint: ["/entrypoint.sh", "/bin/bash"]
     command:
       - -c
       - |
@@ -115,7 +122,8 @@ services:
   airflow-webserver:
     <<: *airflow-common
     container_name: eco2mix_airflow_web
-    command: webserver
+    # Commande complète : entrypoint.sh remplace l'ENTRYPOINT `airflow` de l'image.
+    command: ["airflow", "webserver"]
     ports:
       - "${AIRFLOW_PORT:-8080}:8080"
     healthcheck:
@@ -132,7 +140,7 @@ services:
   airflow-scheduler:
     <<: *airflow-common
     container_name: eco2mix_airflow_scheduler
-    command: scheduler
+    command: ["airflow", "scheduler"]
     healthcheck:
       test: ["CMD-SHELL", "airflow jobs check --job-type SchedulerJob --hostname \"$${HOSTNAME}\""]
       interval: 30s

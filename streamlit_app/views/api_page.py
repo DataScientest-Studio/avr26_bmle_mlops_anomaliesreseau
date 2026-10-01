@@ -16,11 +16,11 @@ m = plan.meta("api")
 theme.header("API FastAPI", m["minutes"], m["owner"])
 
 theme.story(
-    "Faire Predire une valeur **immédiatement**, avec le champion MLflow du moment — "
-    "sans redémarrer le conteneur et sans copier de fichier entre les briques.",
-    "L'API charge `models:/anomalies_conso_national@champion` au démarrage puis garde le "
-    "modèle **en mémoire** ; quand Airflow termine un entraînement, un `POST /reload` "
-    "suffit à changer de version. Prometheus scrape le même `/metrics`.",
+    "Prédire une valeur **immédiatement**, avec le champion MLflow du moment — sans "
+    "redémarrer le conteneur et sans copier de fichier d'une brique à l'autre.",
+    "L'API charge `models:/anomalies_conso_national@champion` au démarrage, puis garde le "
+    "modèle **en mémoire**. Quand Airflow termine un entraînement, un `POST /reload` suffit "
+    "à changer de version. Prometheus scrape le même `/metrics`.",
 )
 
 with st.expander("Pourquoi ces choix d'infrastructure ?", expanded=False):
@@ -28,12 +28,12 @@ with st.expander("Pourquoi ces choix d'infrastructure ?", expanded=False):
         """
 | Choix | Pourquoi |
 |---|---|
-| **Modèle en mémoire** (`model_state`) | l'inférence ne relit pas le registre à chaque requête ; le changement de version est un simple remplacement d'objet Python |
-| **`/reload` plutôt qu'un redémarrage** | Airflow redeploie l'API à chaque run, on veut éviter un coup de service et une nouvelle phase de chargement du modèle |
-| **Promotion décidée par MLflow** | l'API ne choisit pas : elle obéit à l'alias. Une seule source de vérité |
-| **Entraînement en `BackgroundTasks`** | `/train` renvoie `202` immédiatement et refuse une seconde fois (`409`) si un run est déjà en cours |
-| **Conteneur non-root** (`appuser`, uid 1000) | l'API n'a aucun besoin d'écrire dans l'image ; on ne le lui donne pas |
-| **Healthcheck sur `/verify`** | la route la plus légère possible, pour que `depends_on: service_healthy` ne depende pas du modèle |
+| **Modèle en mémoire** (`model_state`) | l'inférence ne relit pas le registre à chaque requête ; changer de version revient à remplacer un objet Python |
+| **`/reload` plutôt qu'un redémarrage** | redémarrer le conteneur interromprait le service et ferait recharger le modèle au démarrage ; on veut l'éviter à chaque run du DAG |
+| **Promotion décidée par MLflow** | l'API ne choisit pas son modèle : elle suit l'alias `@champion`. Une seule source de vérité |
+| **`/train` en tâche de fond** | la route répond `202` tout de suite, et refuse une nouvelle demande (`409`) si un entraînement est déjà en cours |
+| **Conteneur non-root** (`appuser`, uid 1000) | l'API n'a rien à écrire dans l'image ; inutile de lui donner plus de droits |
+| **Healthcheck sur `/verify`** | la route la plus légère possible : `depends_on: service_healthy` peut ainsi démarrer sans attendre le modèle |
 """
     )
 
@@ -61,9 +61,10 @@ else:
         width="stretch", hide_index=True,
     )
     st.caption(
-        "Table lue dans `/openapi.json` : c'est le contrat que l'API sert "
-        "réellement, pas une liste-maintenance. Les seules routes à privilèges sont "
-        "`/train` et `/reload` — celles qui modifient l'état du service."
+        "Table lue dans `/openapi.json` : c'est le contrat que l'API sert réellement, "
+        "et non une liste écrite à la main dans la documentation. Seules `/train` et "
+        "`/reload` exigent le rôle `admin` — ce sont les deux routes qui modifient "
+        "l'état du service."
     )
 
 # -----------------------------------------------------------------------------
@@ -71,14 +72,14 @@ st.subheader("Le champion, en mémoire")
 left, right = st.columns([3, 2])
 left.markdown(
     """
-Un dictionnaire `model_state` tient le modèle, sa version et son artefact. Trois
-moments le font vivre :
+Un dictionnaire `model_state` retient le modèle, sa version et son artefact. Trois
+moments le font changer :
 
 | Moment | Effet |
 |---|---|
 | **Démarrage** (`lifespan`) | `load_best_model()` lit l'alias `@champion` dans le registre |
 | **Chaque `/predict`** | `score()` applique l'artefact en mémoire — aucun appel réseau |
-| **`/reload`** (fin de DAG) | même chargement, et la réponse dit ce qu'on quitte et ce qu'on rejoint |
+| **`/reload`** (fin de DAG) | même chargement ; la réponse indique la version quittée et la version rejointe |
 """
 )
 right.markdown(
@@ -93,8 +94,8 @@ right.markdown(
     """,
     unsafe_allow_html=True,
 )
-st.caption("Sans redémarrage : le changement de modèle est une opération de quelques secondes, "
-           "appelée par la tâche `reload_api` à la fin du DAG.")
+st.caption("Sans redémarrage : changer de modèle prend quelques secondes. C'est la tâche "
+           "`reload_api`, en fin de DAG, qui appelle `/reload`.")
 
 # -----------------------------------------------------------------------------
 st.subheader("Authentification")
@@ -102,9 +103,9 @@ a1, a2 = st.columns(2)
 a1.markdown(
     """
 * Table `users` (créée et amorcée par `src/data/create_users.py`) : deux rôles, `user` et `admin`.
-* Mots de passe **jamais stockés en clair** : `HMAC-SHA256(clé, mot de passe)`, comparaison à temps constant.
+* Mots de passe **jamais stockés en clair** : `HMAC-SHA256(clé, mot de passe)`, puis comparaison à temps constant.
 * `POST /token` renvoie un **JWT HS256** valable 60 minutes, qui porte `sub` et `role`.
-* `require_admin` est une dépendance FastAPI : elle s'ajoute à une route, elle ne se code pas dans sa fonction.
+* `require_admin` est une dépendance FastAPI : on la déclare sur la route, elle n'est pas écrite dans la fonction.
 """
 )
 a2.markdown(
@@ -115,7 +116,7 @@ a2.markdown(
 def reload_model(): ...
 ```
 
-Airflow fait exactement le même chemin : `POST /token` puis
+Airflow suit exactement le même chemin : `POST /token`, puis
 `POST /reload` avec l'en-tête `Authorization: Bearer …`.
 """
 )
@@ -125,10 +126,11 @@ st.subheader("Détection de dérive, dans l'API même")
 d1, d2 = st.columns([3, 2])
 d1.markdown(
     """
-Le service qui reçoit les données est le meilleur endroit pour surveiller si elles
-bougent. L'API garde les **5 dernières lignes** reçues dans un buffer, et les compare
-aux **500 dernières lignes de référence** par un test de Kolmogorov–Smirnov, feature
-par feature. Une p-value < 0,05 est un signal de dérive.
+Le service qui reçoit les données est le mieux placé pour surveiller si elles changent.
+L'API garde les **5 dernières lignes reçues** dans un buffer et les compare aux **500
+dernières lignes de référence**, feature par feature, avec un test de Kolmogorov–Smirnov.
+Une p-value < 0,05 signifie que la distribution de la feature a bougé : c'est un signal
+de dérive.
 """
 )
 d2.markdown(
@@ -142,13 +144,13 @@ d2.markdown(
     """,
     unsafe_allow_html=True,
 )
-st.caption("Le calcul part en tâche de fond après la réponse : "
-           "`/predict` ne paie jamais le test statistique.")
+st.caption("Le calcul part **après** l'envoi de la réponse : l'appelant de `/predict` "
+           "n'attend jamais le test statistique.")
 
 theme.conclusion(
-    "l'API est un **inter Exchangeur mince** — elle ne réentraîne pas, ne décide pas, "
-    "ne copie pas : elle applique en mémoire le champion désigné par MLflow, et `/reload` "
-    "suffit à le remplacer."
+    "l'API est un **interchangeur mince** — elle ne réentraîne pas, ne décide pas, ne "
+    "copie pas de fichier. Elle applique en mémoire le champion désigné par MLflow, et "
+    "`/reload` suffit à le remplacer."
 )
 
 c1, c2 = st.columns(2)

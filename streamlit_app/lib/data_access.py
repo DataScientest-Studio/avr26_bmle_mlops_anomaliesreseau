@@ -278,9 +278,18 @@ _METHODS = ("get", "post", "put", "patch", "delete", "head", "options")
 
 
 @st.cache_data(ttl=15, show_spinner=False)
-def _openapi_cached(url: str) -> list[dict]:
+def _openapi_cached(url: str) -> dict:
+    """Schéma OpenAPI **brut**, mis en cache.
+
+    On cache le document entier plutôt que le tableau de routes : ``/predict``
+    doit aussi lire le schéma ``FeatureRow`` (51 colonnes), et on éviterait
+    ainsi deux téléchargements de ``/openapi.json``.
+    """
     with urllib.request.urlopen(f"{url.rstrip('/')}/openapi.json", timeout=3) as resp:  # noqa: S310
-        spec = json.loads(resp.read().decode("utf-8"))
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def _routes_from_spec(spec: dict) -> list[dict]:
     rows = []
     for path, ops in spec.get("paths", {}).items():
         for method, op in ops.items():
@@ -305,12 +314,91 @@ def get_api_routes() -> Result:
     """
     url = service_urls()["api"]
     try:
-        rows = _openapi_cached(url)
+        rows = _routes_from_spec(_openapi_cached(url))
     except Exception as exc:
         return None, _msg(f"Contrat de l'API '{url}/openapi.json' illisible", exc)
     if not rows:
         return None, "L'API ne déclare aucune route."
     return rows, None
+
+
+# =============================================================================
+# Appel live à /predict (POST)
+# =============================================================================
+def get_predict_fields() -> Result:
+    """Colonnes qu'attend ``FeatureRow``, lues dans le schéma OpenAPI.
+
+    Le contrat de ``/predict`` fait 51 colonnes : les recopier ici les
+    désynchroniserait de l'API au premier changement de feature. On les lit
+    donc dans ``/openapi.json``, comme :func:`get_api_routes` lit les routes.
+    """
+    url = service_urls()["api"]
+    try:
+        schemas = _openapi_cached(url).get("components", {}).get("schemas", {})
+    except Exception as exc:
+        return None, _msg(f"Contrat de l'API '{url}/openapi.json' illisible", exc)
+    props = (schemas.get("FeatureRow") or {}).get("properties") or {}
+    if not props:
+        return None, "Le schéma `FeatureRow` est absent de `/openapi.json` : " \
+                     "l'API n'expose plus le contrat de `/predict` attendu."
+    return list(props), None
+
+
+def _api_error_detail(exc: urllib.error.HTTPError) -> str:
+    """Message d'erreur lisible d'une réponse HTTP en erreur de l'API."""
+    with suppress(Exception):
+        body = json.loads(exc.read().decode("utf-8"))
+        detail = body.get("detail", body)
+        # 422 : pydantic renvoie une liste d'erreurs par champ — on ne garde
+        # que les noms de champs concernés, le message complet est illisible.
+        if isinstance(detail, list):
+            champs = [str(d.get("loc", ["?"])[-1]) for d in detail if isinstance(d, dict)]
+            return (f"HTTP {exc.code} — champs refusés par la validation : "
+                    f"{', '.join(sorted(set(champs))[:8])}")
+        return f"HTTP {exc.code} — {detail}"
+    return f"HTTP {exc.code}"
+
+
+def post_predict(features: pl.DataFrame, timeout: float = 20.0) -> Result:
+    """POST /predict : renvoie ``(DataFrame des prédictions, None)`` ou ``(None, msg)``.
+
+    Volontairement **non cachée** : l'appel a des effets de bord observables
+    (il remplit le buffer de dérive de l'API et fait apparaître les p-values
+    dans Prometheus). Un résultat mis en cache Mentirait sur ce point, qui est
+    justement ce que la démo cherche à montrer.
+
+    Les lignes sont converties en JSON via polars : les ``date_heure`` tz-aware
+    deviennent des chaînes ISO 8601, ce que le champ ``date_heure: str`` de
+    ``FeatureRow`` accepte.
+    """
+    url = f"{service_urls()['api'].rstrip('/')}/predict"
+    if features.height == 0:
+        return None, "Aucune ligne à envoyer."
+    payload = {"features": json.loads(features.write_json())}
+    req = urllib.request.Request(  # noqa: S310
+        url, data=json.dumps(payload).encode("utf-8"), method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
+            body = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        return None, f"`/predict` a refusé la requête — {_api_error_detail(exc)}"
+    except Exception as exc:
+        return None, _msg(f"Appel à {url} impossible (l'API est-elle démarrée ?)", exc)
+
+    preds = body.get("predictions") or []
+    if not preds:
+        return None, "L'API a répondu sans aucune prédiction."
+    out = pl.DataFrame(preds)
+    # L'API renvoie date_heure en ISO 8601 avec offset ; on revient en
+    # datetime Europe/Paris pour être comparable aux tables du reste de l'app.
+    if out.schema.get("date_heure") == pl.Utf8:
+        out = out.with_columns(
+            pl.col("date_heure").str.to_datetime("%Y-%m-%dT%H:%M:%S%z")
+            .dt.convert_time_zone("UTC").dt.convert_time_zone("Europe/Paris")
+        )
+    return out, None
 
 
 # =============================================================================

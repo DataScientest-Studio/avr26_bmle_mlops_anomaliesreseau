@@ -18,10 +18,10 @@ m = plan.meta("grafana")
 theme.header("Prometheus & Grafana", m["minutes"], m["owner"])
 
 theme.story(
-    "Savoir **avant l'incident** que le modèle servi dérive, que l'API ralentit ou "
-    "commence à renvoyer des erreurs.",
-    "L'API expose déjà ses métriques sur `/metrics` ; Prometheus les collecte toutes "
-    "les 5 secondes et Grafana les rend lisibles. Deux dashboards pré-provisionnés "
+    "Savoir **avant l'incident** que le modèle servi dérive, que l'API ralentit ou se "
+    "met à renvoyer des erreurs.",
+    "L'API expose déjà ses métriques sur `/metrics`. Prometheus les collecte toutes les "
+    "5 secondes, et Grafana les rend lisibles. Deux dashboards, préchargés au démarrage, "
     "couvrent l'API et la dérive du modèle.",
 )
 
@@ -29,9 +29,10 @@ theme.story(
 st.subheader("La chaîne de collecte")
 st.markdown(
     """
-`prometheus-fastapi-instrumentator` instrumente l'API → exposition sur `/metrics` →
-Prometheus la scrape **toutes les 5 s** → la source de données Grafana pointe sur
-Prometheus → deux dashboards JSON sont provisionnés au démarrage dans le dossier `MLOps`.
+`prometheus-fastapi-instrumentator` instrumente l'API → l'API expose le résultat sur
+`/metrics` → Prometheus la scrape **toutes les 5 s** → Grafana lit ses données chez
+Prometheus → deux dashboards JSON sont chargés au démarrage dans le dossier Grafana
+`MLOps`.
 """
 )
 st.code(
@@ -45,8 +46,8 @@ scrape_configs:
       - targets: ["api:8000"]""",
     language="yaml",
 )
-st.caption("Grafana n'interroge jamais l'API : il ne connaît que la base de séries temporelles "
-           "de Prometheus. C'est ce qui permet de rejouer l'historique après un incident.")
+st.caption("Grafana n'interroge jamais l'API : il ne lit que la base de séries temporelles de "
+           "Prometheus. C'est ce qui permet de rejouer l'historique après un incident.")
 
 # -----------------------------------------------------------------------------
 st.subheader("Deux familles de métriques")
@@ -57,11 +58,11 @@ with s1:
         """
 | Métrique | Question à laquelle elle répond |
 |---|---|
-| `http_requests_total` | quel volume, quelles routes, quels codes ? |
-| `http_request_duration_seconds_*` | quelle latence, et la queue (p99) ? |
-| `http_request_size_bytes` / `http_response_size_bytes` | quel volume de données échangées ? |
-| `process_resident_memory_bytes` | la mémoire du process tient-elle ? |
-| `process_cpu_seconds_total` | le CPU, en usage ou en fuite ? |
+| `http_requests_total` | combien de requêtes, sur quelles routes, avec quels codes ? |
+| `http_request_duration_seconds_*` | quelle latence, et jusqu'où elle monte (p99) ? |
+| `http_request_size_bytes` / `http_response_size_bytes` | quel volume de données échangé ? |
+| `process_resident_memory_bytes` | la mémoire du processus tient-elle ? |
+| `process_cpu_seconds_total` | le CPU est-il saturé, ou en fuite ? |
 """
     )
 with s2:
@@ -70,12 +71,12 @@ with s2:
         """
 | Métrique | Signification |
 |---|---|
-| `model_feature_drift_ks_pvalue{feature}` | p-value du test KS par feature — dérive si < 0,05 |
+| `model_feature_drift_ks_pvalue{feature}` | p-value du test KS, par feature — dérive si < 0,05 |
 | `model_drifted_features_ratio` | **part des features en dérive**, en % |
 | `model_prediction_mean` | moyenne des prédictions servies |
 
-Elles sont déclarées dans `src/models/main_api.py` : c'est la seule partie de la
-chaîne qui connaît le métier — les métriques techniques, elles, restent génériques.
+Elles sont déclarées dans `src/models/main_api.py`. C'est le seul endroit de la chaîne
+qui connaît le métier : les métriques techniques, elles, restent génériques.
 """
     )
 
@@ -93,17 +94,18 @@ else:
     ratio_s = f"{ratio:.1f} %" if ratio is not None else "—"
     pred_s = f"{pred:,.0f} MW".replace(",", " ") if pred else "—"
     b1, b2, b3, b4 = st.columns(4)
-    b1.metric("Cible scrapée", "🟢 active" if up and up[0]["value"] == 1 else "🔴 down")
+    b1.metric("API scrapée", "🟢 active" if up and up[0]["value"] == 1 else "🔴 injoignable")
     b2.metric("Features en dérive", ratio_s, help="Part des features dont la p-value KS est < 0,05.")
     b3.metric("Prédiction moyenne", pred_s)
     n_ks_val = int(n_ks) if n_ks is not None else 0
-    b4.metric("Features testées", n_ks_val, help="Le test KS est lancé après 5 appels à /predict.")
+    b4.metric("Features testées", n_ks_val, help="Le test KS démarre une fois 5 appels à /predict.")
 
     if n_ks_val == 0:
         st.caption(
-            "Le test de dérive se déclenche après **5 requêtes `/predict`** (le buffer de "
-            "l'API) : `model_feature_drift_ks_pvalue` n'a donc encore aucune série. "
-            "Faire cinq appels à `/predict` depuis Swagger fait apparaître la première."
+            "Le test de dérive démarre après **5 requêtes `/predict`** (la taille du "
+            "buffer de l'API) : `model_feature_drift_ks_pvalue` n'a donc encore aucune "
+            "série. Cinq appels à `/predict` depuis Swagger suffisent à faire apparaître "
+            "la première."
         )
     else:
         ks, ks_err = da.get_prom_query("model_feature_drift_ks_pvalue")
@@ -124,12 +126,14 @@ else:
                         .mark_rule(color=theme.ANOMALIE, strokeDash=[4, 3], strokeWidth=1.5)
                         .encode(y="seuil:Q"))
                 st.altair_chart((chart + rule).properties(height=260), width="stretch")
-                st.caption("Barres sous le seuil de 0,05 : feature dont la distribution a bougé. "
-                           "Les plus faibles p-values sont en haut.")
+                st.caption("Les features sont triées par p-value croissante : les plus "
+                           "dérivees sont à gauche. Toute barre sous le seuil de 0,05 "
+                           "signale une distribution qui a bougé.")
             with c2:
                 if drift.height:
                     st.error(f"**{drift.height} feature(s) en dérive** — le modèle est servi "
-                             f"sur des données qui ne ressemblent plus à sa référence.")
+                             f"sur des données qui ne ressemblent plus à celles de son "
+                             f"entraînement.")
                     st.dataframe(drift.head(10).to_pandas(),
                                  width="stretch", hide_index=True,
                                  column_config={"p": st.column_config.NumberColumn(format="%.4f")})
@@ -146,28 +150,28 @@ with d1:
     st.markdown("**FastAPI Observability** — 10 panneaux")
     st.markdown(
         """
-Volume de requêtes, requêtes/seconde, durée moyenne, **p99**, part de 2xx, part de
-5xx, mémoire résidente, CPU, requêtes en cours, total cumulé. C'est le tableau de
-bord « l'API tient-elle debout ? ».
+Cartographie des temps de réponse, requêtes/seconde, nombre de requêtes, part de 2xx,
+part de 5xx, mémoire résidente, CPU, total cumulé, durée moyenne et **p99**.
+C'est le tableau de bord « l'API tient-elle debout ? ».
 """
     )
 with d2:
     st.markdown("**MLOps - Model & Drift Monitoring** — 4 panneaux")
     st.markdown(
         """
-Dérive globale en %, **p-value KS par feature** avec le seuil critique à 0,05,
-compteur de variables en dérive critique, et moyenne des prédictions. C'est le
-tableau de bord « le modèle a-t-il encore du sens ? ».
+Dérive globale en %, **p-value KS par feature** avec le seuil critique à 0,05, nombre
+de variables en dérive, et consommation moyenne prédite. C'est le tableau de bord
+« le modèle a-t-il encore du sens ? ».
 """
     )
-st.caption("Les deux sont provisionnés en JSON et rechargés toutes les 10 s : un "
-           "changement de dashboard est versionné dans le dépôt comme du code.")
+st.caption("Les deux sont décrits en JSON, dans le dépôt, et Grafana les relit toutes "
+           "les 10 s. Modifier un dashboard revient donc à modifier du code versionné.")
 
 theme.conclusion(
-    "la supervision ne sert pas à dire que « tout va bien », mais à **mesurer la "
-    "dérive entre les données d'entraînement et celles qui arrivent** — un signal "
-    "qui déclenche un ré-entraînement, et le suspect numéro un quand les prédictions "
-    "se dégradent."
+    "la supervision ne sert pas à confirmer que « tout va bien », mais à **mesurer la "
+    "dérive entre les données d'entraînement et celles qui arrivent en production** — "
+    "un signal qui déclenche un ré-entraînement, et le premier suspect quand les "
+    "prédictions se dégradent."
 )
 
 c1, c2 = st.columns(2)

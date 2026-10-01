@@ -96,7 +96,7 @@ airflow-build: ## Construit l'image Airflow
 airflow: ## Démarre la stack Airflow (init + webserver + scheduler)
 	@[ "$(PROJECT_DIR)" = "$$(pwd)" ] || { echo "PROJECT_DIR obsolète — relancez make airflow-prep-env"; exit 1; }
 	mkdir -p dags logs/airflow plugins models models_staging
-	docker compose --profile airflow up -d
+	docker compose --profile airflow up
 	@echo "Interface : http://localhost:$(AIRFLOW_PORT)"
 
 airflow-down: ## Arrête Airflow, conserve les métadonnées
@@ -118,7 +118,10 @@ airflow-reset: ## Remet à zéro les métadonnées Airflow
 mlflow-build: ## construit l'image, sans démarrer
 	docker compose build mlflow
 
-mlflow: silo-check ## Démarre MLflow seul et affiche l'URL
+mlflow-db-upgrade: ## Met le schéma de la base MLflow à niveau (image courante)
+	docker compose run --rm mlflow sh -c 'mlflow db upgrade "$$MLFLOW_BACKEND_STORE_URI"'
+
+mlflow: silo-check mlflow-db-upgrade ## Démarre MLflow seul et affiche l'URL
 	docker compose up -d mlflow
 	@echo "Interface : http://localhost:$(MLFLOW_PORT)"
 
